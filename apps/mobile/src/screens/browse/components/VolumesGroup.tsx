@@ -1,11 +1,13 @@
 import React from "react";
-import { Image } from "react-native";
+import { Image, ImageSourcePropType } from "react-native";
+import { useRouter } from "expo-router";
 import { useNormalizedQuery } from "../../../client";
 import type { Volume } from "@sd/ts-client";
 import { getVolumeIcon } from "@sd/ts-client";
 import { SettingsGroup, SettingsLink } from "../../../components/primitive";
 
 export function VolumesGroup() {
+	const router = useRouter();
 	const { data: volumesData } = useNormalizedQuery<any, { volumes: Volume[] }>(
 		{
 			wireMethod: "query:volumes.list",
@@ -23,7 +25,15 @@ export function VolumesGroup() {
 	return (
 		<SettingsGroup header="Volumes">
 			{volumes.map((volume) => {
-				const volumeIconSrc = getVolumeIcon(volume);
+				// Cast volume_type for compatibility with getVolumeIcon's expected type
+				const volumeIconSrc = getVolumeIcon({
+					mount_point: volume.mount_point,
+					volume_type: volume.volume_type as
+						| "Internal"
+						| "External"
+						| "Removable"
+						| undefined,
+				}) as ImageSourcePropType;
 				return (
 					<SettingsLink
 						key={volume.id}
@@ -39,7 +49,13 @@ export function VolumesGroup() {
 							volume.is_tracked ? "Tracked" : "Not tracked"
 						}
 						onPress={() => {
-							// TODO: Navigate to volume
+							router.push({
+								pathname: "/volume/[volumeId]",
+								params: {
+									volumeId: volume.id,
+									name: volume.display_name || volume.name,
+								},
+							});
 						}}
 					/>
 				);
