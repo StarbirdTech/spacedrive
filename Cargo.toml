@@ -143,3 +143,12 @@ lto           = true     # Enables link to optimizations
 opt-level     = "s"      # Optimize for binary size
 panic         = "unwind" # Sadly we need unwind to avoid unexpected crashes on third party crates
 strip         = true     # Remove debug symbols
+
+# Mobile-optimized release profile - faster builds with reasonable optimization
+# Use with: cargo build --profile release-mobile
+[profile.release-mobile]
+inherits      = "release"
+codegen-units = 16       # Allow parallel compilation (vs 1 in release)
+lto           = false    # Disable link-time optimization (saves 15-20 min per arch)
+opt-level     = 2        # Good optimization without extreme size focus
+strip         = true     # Still remove debug symbols

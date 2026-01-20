@@ -17,10 +17,9 @@ pwd
 export CFLAGS_aarch64_apple_ios="-fno-stack-check -fno-stack-protector"
 export CFLAGS_aarch64_apple_ios_sim="-fno-stack-check -fno-stack-protector"
 
-# Clean aws-lc-sys build cache to avoid stale cmake state
-echo "Cleaning aws-lc-sys build cache..."
-rm -rf apps/mobile/modules/sd-mobile-core/core/target/aarch64-apple-ios/release/build/aws-lc-sys-* || true
-rm -rf apps/mobile/modules/sd-mobile-core/core/target/aarch64-apple-ios-sim/release/build/aws-lc-sys-* || true
+# Note: aws-lc-sys cache cleaning removed to enable incremental builds
+# If you encounter stale cmake state issues, manually run:
+# rm -rf apps/mobile/modules/sd-mobile-core/core/target/*/release/build/aws-lc-sys-*
 
 # Run xtask to build mobile libraries
 cargo xtask build-mobile

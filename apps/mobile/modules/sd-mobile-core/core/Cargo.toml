@@ -22,10 +22,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.11", features = ["serde", "v4"] }
 libc = "0.2"
-openssl-sys = { version = "0.9", features = ["vendored"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# For Android, we must use vendored OpenSSL since there's no system OpenSSL
+# This adds build time but is required for cross-compilation
+openssl = { version = "0.10", features = ["vendored"] }
 jni = "0.21"
+android_logger = "0.14"
+log = "0.4"
 
 # Patches for iOS compatibility (same as sd-ios-core)
 [patch.crates-io]
@@ -34,3 +38,11 @@ netdev = { git = "https://github.com/shellrow/netdev", rev = "b6ef275d2a72143b3c
 
 # Make this a standalone workspace so it can build independently
 [workspace]
+
+# Optimized release profile for mobile builds
+# Faster compile times than full release (no LTO, parallel codegen)
+[profile.release-mobile]
+inherits = "release"
+lto = false
+codegen-units = 8
+opt-level = 2
