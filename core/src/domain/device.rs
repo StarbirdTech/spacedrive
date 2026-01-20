@@ -572,9 +572,36 @@ pub struct SystemInfoConfig {
 
 /// Detect comprehensive system information using sysinfo
 fn detect_system_info() -> SystemInfo {
-	use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+	// Skip sysinfo on mobile platforms - it was causing crashes on Android
+	// (likely due to SELinux denying access to /proc files) and is unreliable on iOS.
+	// TODO: Implement with native APIs (android.os.Build, UIDevice) for richer device info.
+	#[cfg(any(target_os = "android", target_os = "ios"))]
+	{
+		return SystemInfo {
+			cpu_model: None,
+			cpu_architecture: Some(std::env::consts::ARCH.to_string()),
+			cpu_cores_physical: None,
+			cpu_cores_logical: None,
+			cpu_frequency_mhz: None,
+			memory_total_bytes: None,
+			swap_total_bytes: None,
+			form_factor: Some(if cfg!(target_os = "android") {
+				DeviceFormFactor::Mobile
+			} else {
+				DeviceFormFactor::Tablet
+			}),
+			manufacturer: None,
+			gpu_models: None,
+			boot_disk_type: None,
+			boot_disk_capacity_bytes: None,
+		};
+	}
 
-	let mut sys = System::new_with_specifics(
+	#[cfg(not(any(target_os = "android", target_os = "ios")))]
+	{
+		use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+
+		let mut sys = System::new_with_specifics(
 		RefreshKind::new()
 			.with_cpu(CpuRefreshKind::everything())
 			.with_memory(MemoryRefreshKind::everything()),
@@ -647,6 +674,7 @@ fn detect_system_info() -> SystemInfo {
 		boot_disk_type,
 		boot_disk_capacity_bytes,
 	}
+	} // end #[cfg(not(any(target_os = "android", target_os = "ios")))]
 }
 
 /// Public function to detect system info for DeviceConfig
