@@ -510,7 +510,7 @@ fn build_mobile() -> Result<()> {
 				println!("  Building for iOS {} ({})...", name, target);
 
 				let status = Command::new("cargo")
-					.args(["build", "--release", "--target", target])
+					.args(["build", "--profile", "release-mobile", "--target", target])
 					.current_dir(&mobile_core_dir)
 					.env("IPHONEOS_DEPLOYMENT_TARGET", "18.0")
 					.status()
@@ -547,7 +547,7 @@ fn build_mobile() -> Result<()> {
 			println!("  Building for Android {} ({})...", name, target);
 
 			let status = Command::new("cargo")
-				.args(["build", "--release", "--target", target])
+				.args(["build", "--profile", "release-mobile", "--target", target])
 				.current_dir(&mobile_core_dir)
 				.status()
 				.context(format!("Failed to build for {}", target))?;
@@ -573,15 +573,15 @@ fn build_mobile() -> Result<()> {
 	fs::create_dir_all(libs_dir.join("device"))?;
 	fs::create_dir_all(libs_dir.join("simulator"))?;
 
-	// Copy device library
-	let device_lib = target_dir.join("aarch64-apple-ios/release/libsd_mobile_core.a");
+	// Copy device library (from release-mobile profile output directory)
+	let device_lib = target_dir.join("aarch64-apple-ios/release-mobile/libsd_mobile_core.a");
 	if device_lib.exists() {
 		fs::copy(&device_lib, libs_dir.join("device/libsd_mobile_core.a"))?;
 		println!("  ✓ Copied device library");
 	}
 
-	// Copy simulator library
-	let sim_lib = target_dir.join("aarch64-apple-ios-sim/release/libsd_mobile_core.a");
+	// Copy simulator library (from release-mobile profile output directory)
+	let sim_lib = target_dir.join("aarch64-apple-ios-sim/release-mobile/libsd_mobile_core.a");
 	if sim_lib.exists() {
 		fs::copy(&sim_lib, libs_dir.join("simulator/libsd_mobile_core.a"))?;
 		println!("  ✓ Copied simulator library");
