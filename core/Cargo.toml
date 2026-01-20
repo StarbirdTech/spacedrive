@@ -22,6 +22,8 @@ mobile = []
 cli = []
 # WASM plugin system (disabled on mobile)
 wasm = ["dep:wasmer", "dep:wasmer-middlewares"]
+# Whisper speech-to-text support (disabled on Android due to BLAS cross-compilation issues)
+whisper = ["dep:whisper-rs", "dep:hound", "dep:rubato"]
 
 
 [dependencies]
