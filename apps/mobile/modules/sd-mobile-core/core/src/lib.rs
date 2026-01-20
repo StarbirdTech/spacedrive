@@ -10,6 +10,19 @@ use std::{
 	sync::Arc,
 };
 
+/// Safely creates a CString by stripping any embedded null bytes.
+/// This prevents panics when converting strings that may contain null bytes
+/// (e.g., from file paths or error messages).
+fn safe_cstring(s: impl AsRef<str>) -> CString {
+	let s = s.as_ref();
+	// Replace null bytes with Unicode replacement character, then strip any remaining
+	let sanitized: String = s.chars().filter(|&c| c != '\0').collect();
+	CString::new(sanitized).unwrap_or_else(|_| {
+		// If somehow still fails, return empty string
+		CString::new("").expect("Empty string should always be valid CString")
+	})
+}
+
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
@@ -62,6 +75,129 @@ struct JsonRpcResponse {
 struct JsonRpcError {
 	code: i32,
 	message: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	data: Option<JsonRpcErrorData>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct JsonRpcErrorData {
+	/// Specific error type for client-side handling
+	error_type: String,
+	/// Additional details about the error
+	#[serde(skip_serializing_if = "Option::is_none")]
+	details: Option<serde_json::Value>,
+}
+
+/// Map DaemonError variants to JSON-RPC error codes
+/// Standard JSON-RPC codes: -32700 to -32600
+/// Application-specific codes: -32000 to -32099
+fn daemon_error_to_jsonrpc(error: &DaemonError) -> (i32, String, JsonRpcErrorData) {
+	match error {
+		DaemonError::ConnectionFailed(msg) => (
+			-32001,
+			format!("Connection failed: {}", msg),
+			JsonRpcErrorData {
+				error_type: "CONNECTION_FAILED".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::ReadError(msg) => (
+			-32002,
+			format!("Read error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "READ_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::WriteError(msg) => (
+			-32003,
+			format!("Write error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "WRITE_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::RequestTooLarge(msg) => (
+			-32004,
+			format!("Request too large: {}", msg),
+			JsonRpcErrorData {
+				error_type: "REQUEST_TOO_LARGE".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::InvalidRequest(msg) => (
+			-32600,
+			format!("Invalid request: {}", msg),
+			JsonRpcErrorData {
+				error_type: "INVALID_REQUEST".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::SerializationError(msg) => (
+			-32005,
+			format!("Serialization error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "SERIALIZATION_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::DeserializationError(msg) => (
+			-32006,
+			format!("Deserialization error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "DESERIALIZATION_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::HandlerNotFound(method) => (
+			-32601,
+			format!("Method not found: {}", method),
+			JsonRpcErrorData {
+				error_type: "HANDLER_NOT_FOUND".to_string(),
+				details: Some(serde_json::json!({ "method": method })),
+			},
+		),
+		DaemonError::OperationFailed(msg) => (
+			-32007,
+			format!("Operation failed: {}", msg),
+			JsonRpcErrorData {
+				error_type: "OPERATION_FAILED".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::CoreUnavailable(msg) => (
+			-32008,
+			format!("Core unavailable: {}", msg),
+			JsonRpcErrorData {
+				error_type: "CORE_UNAVAILABLE".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::ValidationError(msg) => (
+			-32009,
+			format!("Validation error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "VALIDATION_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::SecurityError(msg) => (
+			-32010,
+			format!("Security error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "SECURITY_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+		DaemonError::InternalError(msg) => (
+			-32603,
+			format!("Internal error: {}", msg),
+			JsonRpcErrorData {
+				error_type: "INTERNAL_ERROR".to_string(),
+				details: Some(serde_json::json!({ "reason": msg })),
+			},
+		),
+	}
 }
 
 /// Initialize the embedded core with full Spacedrive functionality
@@ -73,6 +209,17 @@ pub unsafe extern "C" fn initialize_core(
 	data_dir: *const std::os::raw::c_char,
 	device_name: *const std::os::raw::c_char,
 ) -> std::os::raw::c_int {
+	// Initialize Android logging first so we can see output in logcat
+	#[cfg(target_os = "android")]
+	{
+		android_logger::init_once(
+			android_logger::Config::default()
+				.with_max_level(log::LevelFilter::Debug)
+				.with_tag("sd-mobile-core"),
+		);
+		log::info!("Android logger initialized for sd-mobile-core");
+	}
+
 	let data_dir_str = unsafe { CStr::from_ptr(data_dir).to_string_lossy().to_string() };
 
 	let device_name_opt = if device_name.is_null() {
@@ -85,6 +232,25 @@ pub unsafe extern "C" fn initialize_core(
 			Some(name)
 		}
 	};
+
+	// Set up panic hook to log panics
+	std::panic::set_hook(Box::new(|panic_info| {
+		let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+			s.to_string()
+		} else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+			s.clone()
+		} else {
+			"Unknown panic".to_string()
+		};
+		let location = panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown location".to_string());
+
+		// Use Android logging for better logcat visibility
+		#[cfg(target_os = "android")]
+		log::error!("RUST PANIC: {} at {}", msg, location);
+
+		#[cfg(not(target_os = "android"))]
+		println!("🔥 RUST PANIC: {} at {}", msg, location);
+	}));
 
 	println!(
 		"Initializing embedded Spacedrive core with data dir: {}, device name: {:?}",
@@ -137,7 +303,9 @@ pub unsafe extern "C" fn initialize_core(
 		}
 	};
 
-	// Initialize networking with protocol registration
+	// Try to initialize networking - may fail on mobile due to platform restrictions
+	// iOS: Limited background networking capabilities
+	// Android: SELinux may deny access to /sys/class/net for interface enumeration
 	let networking_result = rt.block_on(async {
 		println!("Initializing networking with protocol registration...");
 		core.init_networking().await
@@ -150,6 +318,9 @@ pub unsafe extern "C" fn initialize_core(
 		Err(e) => {
 			println!("Failed to initialize networking: {}", e);
 			println!("Continuing without networking (pairing will not work)");
+			// Log more details on Android
+			#[cfg(target_os = "android")]
+			log::warn!("Android networking init failed: {}. Device sync will not be available.", e);
 		}
 	}
 
@@ -197,7 +368,7 @@ pub unsafe extern "C" fn handle_core_msg(
 		Some(rt) => rt,
 		None => {
 			let error_json = r#"{"jsonrpc":"2.0","id":"","error":{"code":-32603,"message":"Core not initialized"}}"#;
-			let error_cstring = CString::new(error_json).unwrap();
+			let error_cstring = safe_cstring(error_json);
 			callback(callback_data, error_cstring.as_ptr());
 			return;
 		}
@@ -218,7 +389,7 @@ pub unsafe extern "C" fn handle_core_msg(
 
 		println!("[RPC RESPONSE]: {}", response_json);
 
-		let response_cstring = CString::new(response_json).unwrap();
+		let response_cstring = safe_cstring(response_json);
 		let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 			unsafe { std::mem::transmute(callback_fn_ptr) };
 		let callback_data_ptr: *mut std::os::raw::c_void =
@@ -263,7 +434,7 @@ pub extern "C" fn spawn_core_event_listener(
 
 			println!("Broadcasting event: {}", event_json);
 
-			let event_cstring = CString::new(event_json).unwrap();
+			let event_cstring = safe_cstring(event_json);
 			let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 				unsafe { std::mem::transmute(callback_fn_ptr) };
 			let callback_data_ptr: *mut std::os::raw::c_void =
@@ -314,7 +485,7 @@ pub extern "C" fn spawn_core_log_listener(
 
 			println!("[FFI] Broadcasting log: {}", log_json);
 
-			let log_cstring = CString::new(log_json).unwrap();
+			let log_cstring = safe_cstring(log_json);
 			let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 				unsafe { std::mem::transmute(callback_fn_ptr) };
 			let callback_data_ptr: *mut std::os::raw::c_void =
@@ -368,6 +539,46 @@ async fn process_single_request(
 	jsonrpc_request: JsonRpcRequest,
 	core: &Arc<Core>,
 ) -> JsonRpcResponse {
+	// Validate library_id if provided - ensure it's open before processing
+	if let Some(ref lib_id_str) = jsonrpc_request.params.library_id {
+		match Uuid::parse_str(lib_id_str) {
+			Ok(uuid) => {
+				// Check if library is open using the libraries manager
+				let library = core.libraries.get_library(uuid).await;
+				if library.is_none() {
+					return JsonRpcResponse {
+						jsonrpc: "2.0".to_string(),
+						id: jsonrpc_request.id,
+						result: None,
+						error: Some(JsonRpcError {
+							code: -32004,
+							message: format!("Library not found or not open: {}", lib_id_str),
+							data: Some(JsonRpcErrorData {
+								error_type: "LIBRARY_NOT_FOUND".to_string(),
+								details: Some(serde_json::json!({ "library_id": lib_id_str })),
+							}),
+						}),
+					};
+				}
+			}
+			Err(e) => {
+				return JsonRpcResponse {
+					jsonrpc: "2.0".to_string(),
+					id: jsonrpc_request.id,
+					result: None,
+					error: Some(JsonRpcError {
+						code: -32602,
+						message: format!("Invalid library ID format: {}", e),
+						data: Some(JsonRpcErrorData {
+							error_type: "INVALID_LIBRARY_ID".to_string(),
+							details: Some(serde_json::json!({ "library_id": lib_id_str, "reason": e.to_string() })),
+						}),
+					}),
+				};
+			}
+		}
+	}
+
 	let (daemon_request, request_id) = match convert_jsonrpc_to_daemon_request(&jsonrpc_request) {
 		Ok(converted) => converted,
 		Err(e) => {
@@ -377,7 +588,11 @@ async fn process_single_request(
 				result: None,
 				error: Some(JsonRpcError {
 					code: -32601,
-					message: e,
+					message: e.clone(),
+					data: Some(JsonRpcErrorData {
+						error_type: "INVALID_METHOD".to_string(),
+						details: Some(serde_json::json!({ "reason": e })),
+					}),
 				}),
 			};
 		}
@@ -459,15 +674,19 @@ fn convert_daemon_response_to_jsonrpc(
 			result: Some(json),
 			error: None,
 		},
-		DaemonResponse::Error(daemon_error) => JsonRpcResponse {
-			jsonrpc: "2.0".to_string(),
-			id: request_id,
-			result: None,
-			error: Some(JsonRpcError {
-				code: -32603,
-				message: daemon_error.to_string(),
-			}),
-		},
+		DaemonResponse::Error(daemon_error) => {
+			let (code, message, data) = daemon_error_to_jsonrpc(&daemon_error);
+			JsonRpcResponse {
+				jsonrpc: "2.0".to_string(),
+				id: request_id,
+				result: None,
+				error: Some(JsonRpcError {
+					code,
+					message,
+					data: Some(data),
+				}),
+			}
+		}
 		_ => JsonRpcResponse {
 			jsonrpc: "2.0".to_string(),
 			id: request_id,
@@ -475,6 +694,10 @@ fn convert_daemon_response_to_jsonrpc(
 			error: Some(JsonRpcError {
 				code: -32603,
 				message: "Unsupported response type".to_string(),
+				data: Some(JsonRpcErrorData {
+					error_type: "UNSUPPORTED_RESPONSE".to_string(),
+					details: None,
+				}),
 			}),
 		},
 	}
@@ -495,6 +718,25 @@ mod android {
 	static JAVA_VM: OnceCell<Arc<JavaVM>> = OnceCell::new();
 	static EVENT_MODULE_REF: OnceCell<GlobalRef> = OnceCell::new();
 	static LOG_MODULE_REF: OnceCell<GlobalRef> = OnceCell::new();
+
+	/// Helper function to safely reject a promise with an error message.
+	/// Returns Ok(()) if the rejection succeeded, Err with the failure reason otherwise.
+	fn reject_promise(env: &mut JNIEnv, promise: &GlobalRef, error: &str) {
+		let result = (|| -> Result<(), String> {
+			let error_jstring = env.new_string(error).map_err(|e| format!("Failed to create error string: {}", e))?;
+			env.call_method(
+				promise.as_obj(),
+				"reject",
+				"(Ljava/lang/String;)V",
+				&[JValue::Object(&error_jstring)],
+			).map_err(|e| format!("Failed to call reject method: {}", e))?;
+			Ok(())
+		})();
+
+		if let Err(e) = result {
+			log::error!("Failed to reject promise: {}", e);
+		}
+	}
 
 	// Only for Android x86_64 - provides missing symbol
 	#[cfg(all(target_os = "android", target_arch = "x86_64"))]
@@ -525,8 +767,8 @@ mod android {
 			)
 		};
 
-		let data_dir_cstr = CString::new(data_dir_str).unwrap();
-		let device_name_cstr = device_name_str.map(|s: String| CString::new(s).unwrap());
+		let data_dir_cstr = safe_cstring(data_dir_str);
+		let device_name_cstr = device_name_str.map(|s: String| safe_cstring(s));
 
 		let result = super::initialize_core(
 			data_dir_cstr.as_ptr(),
@@ -554,11 +796,19 @@ mod android {
 		query: JString,
 		promise: JObject,
 	) {
+		// CRITICAL: Capture JavaVM before spawning async task
+		// The async callback will run on a Tokio worker thread that needs JVM access
+		if JAVA_VM.get().is_none() {
+			if let Ok(jvm) = env.get_java_vm() {
+				let _ = JAVA_VM.set(Arc::new(jvm));
+			}
+		}
+
 		let query_str: String = env
 			.get_string(&query)
 			.expect("Failed to get query string")
 			.into();
-		let query_cstr = CString::new(query_str).unwrap();
+		let query_cstr = safe_cstring(query_str);
 
 		let promise_ref = env.new_global_ref(promise).unwrap();
 
@@ -566,20 +816,49 @@ mod android {
 			data: *mut std::os::raw::c_void,
 			result: *const std::os::raw::c_char,
 		) {
-			let promise_ref = unsafe { Box::from_raw(data as *mut GlobalRef) };
-			let result_str = unsafe { CStr::from_ptr(result).to_string_lossy().to_string() };
+			// Wrap entire callback in catch_unwind to prevent panics from crossing FFI boundary
+			let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let promise_ref = unsafe { Box::from_raw(data as *mut GlobalRef) };
+				let result_str = unsafe { CStr::from_ptr(result).to_string_lossy().to_string() };
 
-			let jvm = JAVA_VM.get().expect("JavaVM not initialized");
-			let mut env = jvm.attach_current_thread().unwrap();
+				let jvm = match JAVA_VM.get() {
+					Some(jvm) => jvm,
+					None => {
+						log::error!("android_callback: JavaVM not initialized");
+						return;
+					}
+				};
 
-			let result_jstring = env.new_string(&result_str).unwrap();
-			env.call_method(
-				promise_ref.as_obj(),
-				"resolve",
-				"(Ljava/lang/String;)V",
-				&[JValue::Object(&result_jstring)],
-			)
-			.unwrap();
+				let mut env = match jvm.attach_current_thread() {
+					Ok(env) => env,
+					Err(e) => {
+						log::error!("android_callback: Failed to attach thread: {}", e);
+						return;
+					}
+				};
+
+				let result_jstring = match env.new_string(&result_str) {
+					Ok(s) => s,
+					Err(e) => {
+						log::error!("android_callback: Failed to create result string: {}", e);
+						reject_promise(&mut env, &promise_ref, &format!("JNI error: {}", e));
+						return;
+					}
+				};
+
+				if let Err(e) = env.call_method(
+					promise_ref.as_obj(),
+					"resolve",
+					"(Ljava/lang/String;)V",
+					&[JValue::Object(&result_jstring)],
+				) {
+					log::error!("android_callback: Failed to resolve promise: {}", e);
+				}
+			}));
+
+			if let Err(e) = callback_result {
+				log::error!("android_callback: Panic caught: {:?}", e);
+			}
 		}
 
 		let promise_ptr = Box::into_raw(Box::new(promise_ref)) as *mut std::os::raw::c_void;
@@ -602,23 +881,55 @@ mod android {
 			_data: *mut std::os::raw::c_void,
 			event: *const std::os::raw::c_char,
 		) {
-			let event_str = unsafe { CStr::from_ptr(event).to_string_lossy().to_string() };
+			// Wrap entire callback in catch_unwind to prevent panics from crossing FFI boundary
+			let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let event_str = unsafe { CStr::from_ptr(event).to_string_lossy().to_string() };
 
-			let jvm = JAVA_VM.get().expect("JavaVM not initialized");
-			let mut env = jvm.attach_current_thread().unwrap();
+				let jvm = match JAVA_VM.get() {
+					Some(jvm) => jvm,
+					None => {
+						log::error!("android_event_callback: JavaVM not initialized");
+						return;
+					}
+				};
 
-			let module_ref = EVENT_MODULE_REF
-				.get()
-				.expect("Event module not initialized");
-			let event_jstring = env.new_string(&event_str).unwrap();
+				let mut env = match jvm.attach_current_thread() {
+					Ok(env) => env,
+					Err(e) => {
+						log::error!("android_event_callback: Failed to attach thread: {}", e);
+						return;
+					}
+				};
 
-			env.call_method(
-				module_ref.as_obj(),
-				"sendCoreEvent",
-				"(Ljava/lang/String;)V",
-				&[JValue::Object(&event_jstring)],
-			)
-			.unwrap();
+				let module_ref = match EVENT_MODULE_REF.get() {
+					Some(r) => r,
+					None => {
+						log::error!("android_event_callback: Event module not initialized");
+						return;
+					}
+				};
+
+				let event_jstring = match env.new_string(&event_str) {
+					Ok(s) => s,
+					Err(e) => {
+						log::error!("android_event_callback: Failed to create event string: {}", e);
+						return;
+					}
+				};
+
+				if let Err(e) = env.call_method(
+					module_ref.as_obj(),
+					"sendCoreEvent",
+					"(Ljava/lang/String;)V",
+					&[JValue::Object(&event_jstring)],
+				) {
+					log::error!("android_event_callback: Failed to send event: {}", e);
+				}
+			}));
+
+			if let Err(e) = callback_result {
+				log::error!("android_event_callback: Panic caught: {:?}", e);
+			}
 		}
 
 		super::spawn_core_event_listener(android_event_callback, std::ptr::null_mut());
@@ -639,21 +950,53 @@ mod android {
 			_data: *mut std::os::raw::c_void,
 			log: *const std::os::raw::c_char,
 		) {
-			let log_str = unsafe { CStr::from_ptr(log).to_string_lossy().to_string() };
+			// Wrap entire callback in catch_unwind to prevent panics from crossing FFI boundary
+			let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				let log_str = unsafe { CStr::from_ptr(log).to_string_lossy().to_string() };
 
-			let jvm = JAVA_VM.get().expect("JavaVM not initialized");
-			let mut env = jvm.attach_current_thread().unwrap();
+				let jvm = match JAVA_VM.get() {
+					Some(jvm) => jvm,
+					None => {
+						// Can't log this since we're in the log callback - just return
+						return;
+					}
+				};
 
-			let module_ref = LOG_MODULE_REF.get().expect("Log module not initialized");
-			let log_jstring = env.new_string(&log_str).unwrap();
+				let mut env = match jvm.attach_current_thread() {
+					Ok(env) => env,
+					Err(_) => {
+						// Can't log this since we're in the log callback - just return
+						return;
+					}
+				};
 
-			env.call_method(
-				module_ref.as_obj(),
-				"sendCoreLog",
-				"(Ljava/lang/String;)V",
-				&[JValue::Object(&log_jstring)],
-			)
-			.unwrap();
+				let module_ref = match LOG_MODULE_REF.get() {
+					Some(r) => r,
+					None => {
+						// Log module not initialized - just return
+						return;
+					}
+				};
+
+				let log_jstring = match env.new_string(&log_str) {
+					Ok(s) => s,
+					Err(_) => {
+						// Failed to create string - just return
+						return;
+					}
+				};
+
+				// Ignore errors in log callback to avoid infinite recursion
+				let _ = env.call_method(
+					module_ref.as_obj(),
+					"sendCoreLog",
+					"(Ljava/lang/String;)V",
+					&[JValue::Object(&log_jstring)],
+				);
+			}));
+
+			// Silently ignore panics in log callback to avoid cascading failures
+			let _ = callback_result;
 		}
 
 		super::spawn_core_log_listener(android_log_callback, std::ptr::null_mut());

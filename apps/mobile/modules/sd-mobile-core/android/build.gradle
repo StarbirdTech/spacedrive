@@ -39,4 +39,5 @@ tasks.named('preBuild').configure {
 dependencies {
   implementation project(':expo-modules-core')
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.25"
+  implementation "androidx.documentfile:documentfile:1.0.1"
 }
