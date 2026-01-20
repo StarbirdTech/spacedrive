@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useEffect } from "react";
-import { View, Text, Pressable, ScrollView, StyleSheet } from "react-native";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import { View, Text, Pressable, ScrollView, StyleSheet, Alert, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation, DrawerActions } from "@react-navigation/native";
 import Animated, {
@@ -13,8 +13,10 @@ import Animated, {
 	Easing,
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
-import { useNormalizedQuery } from "../../client";
-import type { Library } from "@sd/ts-client";
+import * as DocumentPicker from "expo-document-picker";
+import { SDMobileCore } from "sd-mobile-core";
+import { useNormalizedQuery, useMobileClient } from "../../client";
+import type { Library, Device } from "@sd/ts-client";
 import { HeroStats, DevicePanel, ActionButtons } from "./components";
 import { PairingPanel } from "../../components/PairingPanel";
 import { LibrarySwitcherPanel } from "../../components/LibrarySwitcherPanel";
@@ -35,6 +37,7 @@ export function OverviewScreen() {
 	const insets = useSafeAreaInsets();
 	const navigation = useNavigation();
 	const router = useRouter();
+	const client = useMobileClient();
 	const scrollY = useSharedValue(0);
 	const expandedOffsetY = useSharedValue(0);
 	const [showPairing, setShowPairing] = useState(false);
@@ -44,6 +47,7 @@ export function OverviewScreen() {
 	);
 	const { enterSearchMode } = useSearchStore();
 	const { activeJobCount, hasRunningJobs } = useJobs();
+	const [isAddingStorage, setIsAddingStorage] = useState(false);
 
 	// Spinning animation for jobs icon
 	const spinRotation = useSharedValue(0);
@@ -90,6 +94,30 @@ export function OverviewScreen() {
 		resourceType: "location",
 	});
 
+	// Fetch devices to get current device slug
+	const { data: devicesData, error: devicesError } = useNormalizedQuery<any, Device[]>({
+		wireMethod: "query:devices.list",
+		input: { include_offline: true, include_details: false },
+		resourceType: "device",
+	});
+
+	// Get the current device
+	const currentDevice = useMemo(() => {
+		if (!devicesData) {
+			console.log("[OverviewScreen] No devicesData yet");
+			return null;
+		}
+		console.log("[OverviewScreen] devicesData:", JSON.stringify(devicesData).slice(0, 500));
+		const devices = Array.isArray(devicesData) ? devicesData : (devicesData as any).devices;
+		if (!devices) {
+			console.log("[OverviewScreen] No devices array found");
+			return null;
+		}
+		const current = devices.find((d: Device) => d.is_current);
+		console.log("[OverviewScreen] Current device:", current?.name, current?.slug);
+		return current || null;
+	}, [devicesData]);
+
 	// Find the selected location from the list reactively
 	const selectedLocation = useMemo(() => {
 		if (!selectedLocationId || !locationsData?.locations) return null;
@@ -103,6 +131,90 @@ export function OverviewScreen() {
 	const openDrawer = () => {
 		navigation.dispatch(DrawerActions.openDrawer());
 	};
+
+	// Handle adding storage location
+	const handleAddStorage = useCallback(async () => {
+		if (!currentDevice) {
+			const errorMsg = devicesError
+				? `Device query failed: ${devicesError}`
+				: "Device information not loaded yet. Please wait a moment and try again.";
+			Alert.alert("Error", errorMsg);
+			console.log("[handleAddStorage] No current device. Error:", devicesError);
+			return;
+		}
+
+		if (isAddingStorage) return;
+
+		try {
+			setIsAddingStorage(true);
+
+			if (Platform.OS === "android") {
+				// Use native SAF folder picker for Android
+				console.log("[handleAddStorage] Opening Android folder picker...");
+				const result = await SDMobileCore.pickFolder();
+				console.log("[handleAddStorage] Folder picker result:", result);
+
+				if (!result.path) {
+					Alert.alert(
+						"Cannot Access Folder",
+						"The selected folder cannot be accessed directly. This may be due to Android storage restrictions.\n\nPlease try selecting a folder from internal storage (not an SD card or cloud storage).",
+						[{ text: "OK" }]
+					);
+					return;
+				}
+
+				// Add the location with the real filesystem path
+				await client.libraryAction("locations.add", {
+					path: {
+						Physical: {
+							device_slug: currentDevice.slug,
+							path: result.path,
+						},
+					},
+					name: result.name,
+					mode: "Deep",
+					job_policies: null,
+				});
+
+				Alert.alert("Success", `Added "${result.name}" to your library! Indexing will begin shortly.`);
+			} else {
+				// iOS - use expo-document-picker
+				const result = await DocumentPicker.getDocumentAsync({
+					type: "*/*",
+					copyToCacheDirectory: false,
+				});
+
+				if (result.canceled || !result.assets || result.assets.length === 0) {
+					return;
+				}
+
+				const selectedUri = result.assets[0].uri;
+
+				await client.libraryAction("locations.add", {
+					path: {
+						Physical: {
+							device_slug: currentDevice.slug,
+							path: selectedUri,
+						},
+					},
+					name: null,
+					mode: "Deep",
+					job_policies: null,
+				});
+
+				Alert.alert("Success", "Storage location added! Indexing will begin shortly.");
+			}
+		} catch (err: any) {
+			console.error("Failed to add storage:", err);
+			// Handle cancellation gracefully
+			if (err?.code === "CANCELLED" || err?.message?.includes("cancel")) {
+				return;
+			}
+			Alert.alert("Error", `Failed to add storage: ${err?.message || err}`);
+		} finally {
+			setIsAddingStorage(false);
+		}
+	}, [client, currentDevice, isAddingStorage, devicesError]);
 
 	// Entrance animation on mount
 	useEffect(() => {
@@ -557,7 +669,7 @@ export function OverviewScreen() {
 				<ActionButtons
 					onPairDevice={() => setShowPairing(true)}
 					onSetupSync={() => {/* TODO: Open sync setup */}}
-					onAddStorage={() => {/* TODO: Open location picker */}}
+					onAddStorage={handleAddStorage}
 				/>
 				</View>
 			</Animated.ScrollView>
