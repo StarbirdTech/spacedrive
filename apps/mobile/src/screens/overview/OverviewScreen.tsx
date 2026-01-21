@@ -20,6 +20,7 @@ import { HeroStats, DevicePanel, ActionButtons } from "./components";
 import { PairingPanel } from "../../components/PairingPanel";
 import { LibrarySwitcherPanel } from "../../components/LibrarySwitcherPanel";
 import { GlassButton } from "../../components/GlassButton";
+import { StoragePermissionBanner } from "../../components/StoragePermissionBanner";
 
 const HEADER_INITIAL_HEIGHT = 40;
 const HERO_HEIGHT = 340 + HEADER_INITIAL_HEIGHT;
@@ -540,6 +541,11 @@ export function OverviewScreen() {
 				onScroll={scrollHandler}
 				scrollEventThrottle={16}
 			>
+				{/* Storage Permission Banner (Android only) */}
+				<View className="pt-4">
+					<StoragePermissionBanner />
+				</View>
+
 				<View className="px-4 pt-4">
 
 				{/* Device Panel */}
