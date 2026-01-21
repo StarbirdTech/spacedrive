@@ -107,10 +107,8 @@ export class ReactNativeTransport {
 	}
 
 	private processResponse = (response: JsonRpcResponse) => {
-		console.log("[Transport] 🔄 Processing response for ID:", response.id);
 		const pending = this.pendingRequests.get(response.id);
 		if (!pending) {
-			console.warn("[Transport] ⚠️ No pending request for ID:", response.id);
 			return;
 		}
 
@@ -125,7 +123,6 @@ export class ReactNativeTransport {
 			);
 			pending.reject(error);
 		} else {
-			console.log("[Transport] ✅ Response success");
 			pending.resolve(response.result);
 		}
 
@@ -148,9 +145,7 @@ export class ReactNativeTransport {
 				const query = JSON.stringify(
 					currentBatch.length === 1 ? currentBatch[0] : currentBatch,
 				);
-				console.log("[Transport] 📤 Sending request:", query.substring(0, 200));
 				const resultStr = await SDMobileCore.sendMessage(query);
-				console.log("[Transport] 📥 Got response:", resultStr.substring(0, 200));
 				const result = JSON.parse(resultStr);
 
 				if (Array.isArray(result)) {
@@ -160,7 +155,6 @@ export class ReactNativeTransport {
 				}
 			} catch (e) {
 				console.error("[Transport] ❌ Batch request failed:", e);
-				// Reject all pending requests in batch
 				for (const req of currentBatch) {
 					const pending = this.pendingRequests.get(req.id);
 					if (pending) {
@@ -240,20 +234,15 @@ export class ReactNativeTransport {
 		callback: (event: Event) => void,
 		_options?: SubscriptionOptions,
 	): Promise<() => void> {
-		console.log("[Transport] 🎧 Subscribing to core events...");
-
 		const unlisten = SDMobileCore.addListener((coreEvent: CoreEvent) => {
-			console.log("[Transport] 📨 Raw event received:", coreEvent.body.substring(0, 100));
 			try {
 				const event = JSON.parse(coreEvent.body) as Event;
-				console.log("[Transport] ✅ Event parsed:", typeof event === "string" ? event : Object.keys(event)[0]);
 				callback(event);
 			} catch (e) {
 				console.error("[Transport] ❌ Failed to parse event:", e);
 			}
 		});
 
-		console.log("[Transport] ✅ Event listener registered");
 		return unlisten;
 	}
 
