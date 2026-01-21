@@ -202,6 +202,7 @@ export function OverviewScreen() {
 		<ScrollView
 			className="flex-1 bg-app"
 			contentContainerStyle={{
+				paddingTop: insets.top + 16,
 				paddingBottom: insets.bottom + 100,
 			}}
 		>
