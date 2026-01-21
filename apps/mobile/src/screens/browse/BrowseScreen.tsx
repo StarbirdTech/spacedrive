@@ -8,8 +8,19 @@ import {
 	NativeSyntheticEvent,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Animated, {
+	useAnimatedStyle,
+	withTiming,
+	Easing,
+} from "react-native-reanimated";
 import { useNormalizedQuery } from "../../client";
 import { DevicesGroup, LocationsGroup, VolumesGroup } from "./components";
+
+// Animation config for smooth transitions
+const timingConfig = {
+	duration: 200,
+	easing: Easing.out(Easing.cubic),
+};
 
 interface Space {
 	id: string;
@@ -18,6 +29,33 @@ interface Space {
 }
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
+
+// Animated indicator dot for space pagination
+function IndicatorDot({
+	isActive,
+	color,
+}: {
+	isActive: boolean;
+	color: string;
+}) {
+	const animatedStyle = useAnimatedStyle(() => ({
+		width: withTiming(isActive ? 24 : 8, timingConfig),
+		opacity: withTiming(isActive ? 1 : 0.3, timingConfig),
+		backgroundColor: color,
+	}));
+
+	return (
+		<Animated.View
+			style={[
+				{
+					height: 8,
+					borderRadius: 4,
+				},
+				animatedStyle,
+			]}
+		/>
+	);
+}
 
 function SpaceIndicator({
 	spaces,
@@ -34,22 +72,13 @@ function SpaceIndicator({
 				const isCreatePage = index === totalPages - 1;
 				const space = !isCreatePage ? spaces[index] : null;
 				const isActive = currentIndex === index;
+				const color = isCreatePage
+					? isActive
+						? "hsl(235, 70%, 55%)"
+						: "hsl(235, 15%, 30%)"
+					: space?.color || "hsl(235, 15%, 30%)";
 
-				return (
-					<View
-						key={index}
-						className="h-2 rounded-full transition-all"
-						style={{
-							width: isActive ? 24 : 8,
-							backgroundColor: isCreatePage
-								? isActive
-									? "hsl(235, 70%, 55%)"
-									: "hsl(235, 15%, 30%)"
-								: space?.color || "hsl(235, 15%, 30%)",
-							opacity: isActive ? 1 : 0.3,
-						}}
-					/>
-				);
+				return <IndicatorDot key={index} isActive={isActive} color={color} />;
 			})}
 		</View>
 	);
