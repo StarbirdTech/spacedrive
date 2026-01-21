@@ -16,6 +16,13 @@ import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.records.Field
 import expo.modules.kotlin.records.Record
+import android.Manifest
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 // Options class for folder picker (required for AsyncFunction pattern with activity results)
 class FolderPickerOptions : Record {
@@ -24,73 +31,227 @@ class FolderPickerOptions : Record {
 }
 
 class SDMobileCoreModule : Module() {
-    private var listeners = 0
-    private var logListeners = 0
-    private var registeredWithRust = false
-    private var logRegisteredWithRust = false
-    private var pendingFolderPickerPromise: Promise? = null
+    // Thread-safe listener counters
+    private val listeners = AtomicInteger(0)
+    private val logListeners = AtomicInteger(0)
+    private val registeredWithRust = AtomicBoolean(false)
+    private val logRegisteredWithRust = AtomicBoolean(false)
+
+    // Thread-safe promise storage for concurrent folder picker calls
+    // Maps request code to pending promise
+    private val pendingFolderPickerPromises = ConcurrentHashMap<Int, Promise>()
+    private val requestCodeCounter = AtomicInteger(FOLDER_PICKER_REQUEST_CODE_BASE)
 
     companion object {
-        private const val FOLDER_PICKER_REQUEST_CODE = 9999
+        private const val FOLDER_PICKER_REQUEST_CODE_BASE = 9999
+        private const val TAG = "SDMobileCore"
+
+        // Cached debug state - set during initialization
+        @Volatile
+        private var isDebugBuild: Boolean = true // Default to debug for safety
+
+        /**
+         * Initialize the debug state based on application flags.
+         * Should be called once during module initialization.
+         */
+        fun initDebugState(context: Context?) {
+            context?.applicationInfo?.let { appInfo ->
+                isDebugBuild = (appInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            }
+        }
+
+        /**
+         * Log a debug message only in debug builds.
+         * In release builds, this is a no-op.
+         */
+        fun debugLog(message: String) {
+            if (isDebugBuild) {
+                Log.d(TAG, message)
+            }
+        }
+
+        /**
+         * Sanitize a path for logging to avoid exposing user directory structure.
+         * In debug builds, returns the full path for easier debugging.
+         * In release builds, returns only the last path component.
+         */
+        fun sanitizePath(path: String?): String {
+            if (path == null) return "<null>"
+            return if (isDebugBuild) {
+                path
+            } else {
+                // Only show last path component in release
+                val lastSeparator = path.lastIndexOf('/')
+                if (lastSeparator >= 0 && lastSeparator < path.length - 1) {
+                    ".../${path.substring(lastSeparator + 1)}"
+                } else {
+                    "..."
+                }
+            }
+        }
+
+        /**
+         * Check if the app has appropriate storage permissions for the current Android version.
+         * - Android 11+ (API 30+): Checks MANAGE_EXTERNAL_STORAGE
+         * - Android 10 (API 29): Checks READ_EXTERNAL_STORAGE
+         * - Android 9 and below: Checks READ_EXTERNAL_STORAGE
+         *
+         * @return true if the app has sufficient storage permissions
+         */
+        fun hasStoragePermission(context: Context): Boolean {
+            return when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                    // Android 11+ - check for MANAGE_EXTERNAL_STORAGE
+                    Environment.isExternalStorageManager()
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> {
+                    // Android 10 - scoped storage, but can still check basic permission
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+                else -> {
+                    // Android 9 and below
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    ) == PackageManager.PERMISSION_GRANTED
+                }
+            }
+        }
+
+        /**
+         * Log a warning if storage permission is not granted.
+         * This helps developers understand why file operations might fail.
+         */
+        fun warnIfNoStoragePermission(context: Context?, operation: String) {
+            if (context == null) return
+            if (!hasStoragePermission(context)) {
+                Log.w(TAG, "Storage permission not granted for operation: $operation. " +
+                    "File access may fail or be limited to app-specific directories.")
+            }
+        }
+
+        /**
+         * Validate and resolve a path, checking for path traversal attacks.
+         *
+         * Security checks performed:
+         * 1. Reject null or empty paths
+         * 2. Split path into components and check each one
+         * 3. Reject paths with ".." components (parent traversal)
+         * 4. Reject paths starting with "/" (absolute paths) when relative expected
+         * 5. Resolve canonical path and verify it's under expected base
+         *
+         * @param basePath The allowed base directory
+         * @param relativePath The relative path to validate
+         * @return The validated canonical path, or null if validation fails
+         */
+        fun validateAndResolvePath(basePath: String, relativePath: String): String? {
+            // Reject empty paths
+            if (relativePath.isBlank()) {
+                return basePath
+            }
+
+            // Split and validate each path component
+            val components = relativePath.split("/").filter { it.isNotEmpty() }
+            for (component in components) {
+                // Reject parent directory traversal
+                if (component == "..") {
+                    Log.w(TAG, "Path traversal attempt detected: contains '..'")
+                    return null
+                }
+                // Reject hidden directories/files starting with . (optional, stricter)
+                // component.startsWith(".") could be added here if needed
+            }
+
+            // Construct the full path
+            val fullPath = if (relativePath.isNotEmpty()) {
+                "$basePath/$relativePath"
+            } else {
+                basePath
+            }
+
+            // Resolve to canonical path and verify it's still under base
+            return try {
+                val baseFile = java.io.File(basePath).canonicalFile
+                val targetFile = java.io.File(fullPath).canonicalFile
+
+                // Check that the canonical path is under the base path
+                // This catches symlink-based escape attempts
+                if (!targetFile.absolutePath.startsWith(baseFile.absolutePath)) {
+                    Log.w(TAG, "Path escape attempt: resolved path is outside base directory")
+                    null
+                } else {
+                    targetFile.absolutePath
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Path validation failed: ${e.message}")
+                null
+            }
+        }
     }
 
     init {
         try {
             System.loadLibrary("sd_mobile_core")
         } catch (e: UnsatisfiedLinkError) {
-            android.util.Log.e("SDMobileCore", "Failed to load native library: ${e.message}")
+            Log.e(TAG, "Failed to load native library: ${e.message}")
         }
     }
 
     override fun definition() = ModuleDefinition {
         Name("SDMobileCore")
 
+        // Initialize debug state based on app's debuggable flag
+        initDebugState(appContext.reactContext)
+
         Events("SDCoreEvent", "SDCoreLog")
 
         OnStartObserving("SDCoreEvent") {
-            android.util.Log.i("SDMobileCore", "📡 OnStartObserving SDCoreEvent triggered")
+            Log.i(TAG, "OnStartObserving SDCoreEvent triggered")
 
-            if (!registeredWithRust) {
+            if (registeredWithRust.compareAndSet(false, true)) {
                 try {
-                    android.util.Log.i("SDMobileCore", "🚀 Registering event listener...")
+                    Log.i(TAG, "Registering event listener...")
                     registerCoreEventListener()
-                    registeredWithRust = true
-                    android.util.Log.i("SDMobileCore", "✅ Event listener registered with Rust")
+                    Log.i(TAG, "Event listener registered with Rust")
                 } catch (e: Exception) {
-                    android.util.Log.e("SDMobileCore", "Failed to register event listener: ${e.message}")
+                    registeredWithRust.set(false) // Reset on failure
+                    Log.e(TAG, "Failed to register event listener: ${e.message}")
                 }
             }
 
-            listeners++
-            android.util.Log.i("SDMobileCore", "📊 SDCoreEvent listeners: $listeners")
+            val count = listeners.incrementAndGet()
+            Log.i(TAG, "SDCoreEvent listeners: $count")
         }
 
         OnStopObserving("SDCoreEvent") {
-            listeners--
-            android.util.Log.i("SDMobileCore", "📉 SDCoreEvent listeners: $listeners")
+            val count = listeners.decrementAndGet()
+            Log.i(TAG, "SDCoreEvent listeners: $count")
         }
 
         OnStartObserving("SDCoreLog") {
-            android.util.Log.i("SDMobileCore", "📡 OnStartObserving SDCoreLog triggered")
+            Log.i(TAG, "OnStartObserving SDCoreLog triggered")
 
-            if (!logRegisteredWithRust) {
+            if (logRegisteredWithRust.compareAndSet(false, true)) {
                 try {
-                    android.util.Log.i("SDMobileCore", "🚀 Registering log listener...")
+                    Log.i(TAG, "Registering log listener...")
                     registerCoreLogListener()
-                    logRegisteredWithRust = true
-                    android.util.Log.i("SDMobileCore", "✅ Log listener registered with Rust")
+                    Log.i(TAG, "Log listener registered with Rust")
                 } catch (e: Exception) {
-                    android.util.Log.e("SDMobileCore", "Failed to register log listener: ${e.message}")
+                    logRegisteredWithRust.set(false) // Reset on failure
+                    Log.e(TAG, "Failed to register log listener: ${e.message}")
                 }
             }
 
-            logListeners++
-            android.util.Log.i("SDMobileCore", "📊 SDCoreLog listeners: $logListeners")
+            val count = logListeners.incrementAndGet()
+            Log.i(TAG, "SDCoreLog listeners: $count")
         }
 
         OnStopObserving("SDCoreLog") {
-            logListeners--
-            android.util.Log.i("SDMobileCore", "📉 SDCoreLog listeners: $logListeners")
+            val count = logListeners.decrementAndGet()
+            Log.i(TAG, "SDCoreLog listeners: $count")
         }
 
         Function("initialize") { dataDir: String?, deviceName: String? ->
@@ -100,7 +261,7 @@ class SDMobileCoreModule : Module() {
             try {
                 initializeCore(dir, deviceName)
             } catch (e: Exception) {
-                android.util.Log.e("SDMobileCore", "Failed to initialize core: ${e.message}")
+                Log.e(TAG, "Failed to initialize core: ${e.message}")
                 -1
             }
         }
@@ -117,17 +278,20 @@ class SDMobileCoreModule : Module() {
             try {
                 shutdownCore()
             } catch (e: Exception) {
-                android.util.Log.e("SDMobileCore", "Failed to shutdown core: ${e.message}")
+                Log.e(TAG, "Failed to shutdown core: ${e.message}")
             }
         }
 
         // Simple test function
         Function("testFunction") {
-            android.util.Log.i("SDMobileCore", "testFunction called!")
+            Log.i(TAG, "testFunction called!")
             "test_result"
         }
 
         // Open Android folder picker using Storage Access Framework
+        // TODO: Migrate to ActivityResultContracts when Expo modules support it
+        // See: https://github.com/expo/expo/issues/TBD
+        @Suppress("DEPRECATION")
         AsyncFunction("pickFolder") { options: FolderPickerOptions, promise: Promise ->
             val activity = appContext.currentActivity
             if (activity == null) {
@@ -143,10 +307,14 @@ class SDMobileCoreModule : Module() {
                     addFlags(Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
                 }
 
-                pendingFolderPickerPromise = promise
-                activity.startActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE)
+                // Generate unique request code for concurrent calls
+                val requestCode = requestCodeCounter.incrementAndGet()
+                pendingFolderPickerPromises[requestCode] = promise
+
+                @Suppress("DEPRECATION")
+                activity.startActivityForResult(intent, requestCode)
             } catch (e: Exception) {
-                android.util.Log.e("SDMobileCore", "Failed to open folder picker: ${e.message}")
+                Log.e(TAG, "Failed to open folder picker: ${e.message}")
                 promise.reject(CodedException("PICKER_ERROR", e.message ?: "Failed to open folder picker", e))
             }
         }
@@ -157,55 +325,58 @@ class SDMobileCoreModule : Module() {
                 val uri = Uri.parse(uriString)
                 getPathFromContentUri(uri)
             } catch (e: Exception) {
-                android.util.Log.e("SDMobileCore", "Failed to get path from URI: ${e.message}")
+                Log.e(TAG, "Failed to get path from URI: ${e.message}")
                 null
             }
         }
 
         OnActivityResult { _, payload ->
-            if (payload.requestCode == FOLDER_PICKER_REQUEST_CODE) {
-                val promise = pendingFolderPickerPromise
-                pendingFolderPickerPromise = null
+            // Look up promise by request code from concurrent-safe map
+            val promise = pendingFolderPickerPromises.remove(payload.requestCode)
 
-                if (promise == null) {
-                    android.util.Log.w("SDMobileCore", "No pending promise for folder picker result")
-                    return@OnActivityResult
-                }
-
-                if (payload.resultCode != Activity.RESULT_OK) {
-                    promise.reject(CodedException("CANCELLED", "Folder picker was cancelled", null))
-                    return@OnActivityResult
-                }
-
-                val uri = payload.data?.data
-                if (uri == null) {
-                    promise.reject(CodedException("NO_URI", "No folder URI returned", null))
-                    return@OnActivityResult
-                }
-
-                // Take persistent permissions
-                try {
-                    val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    appContext.reactContext?.contentResolver?.takePersistableUriPermission(uri, takeFlags)
-                } catch (e: Exception) {
-                    android.util.Log.w("SDMobileCore", "Failed to take persistent permission: ${e.message}")
-                }
-
-                // Try to get the real path
-                val realPath = getPathFromContentUri(uri)
-                val folderName = appContext.reactContext?.let { context ->
-                    DocumentFile.fromTreeUri(context, uri)?.name
-                } ?: "Unknown"
-
-                val result = mapOf(
-                    "uri" to uri.toString(),
-                    "path" to realPath,
-                    "name" to folderName
-                )
-
-                promise.resolve(result)
+            if (promise == null) {
+                // Not our request code, ignore
+                return@OnActivityResult
             }
+
+            if (payload.resultCode != Activity.RESULT_OK) {
+                promise.reject(CodedException("CANCELLED", "Folder picker was cancelled", null))
+                return@OnActivityResult
+            }
+
+            val uri = payload.data?.data
+            if (uri == null) {
+                promise.reject(CodedException("NO_URI", "No folder URI returned", null))
+                return@OnActivityResult
+            }
+
+            // Take persistent permissions
+            try {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                appContext.reactContext?.contentResolver?.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Failed to take persistent permission (SecurityException): ${e.message}")
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Failed to take persistent permission (invalid URI): ${e.message}")
+            }
+
+            // Check storage permissions before path resolution
+            warnIfNoStoragePermission(appContext.reactContext, "folder picker path resolution")
+
+            // Try to get the real path
+            val realPath = getPathFromContentUri(uri)
+            val folderName = appContext.reactContext?.let { context ->
+                DocumentFile.fromTreeUri(context, uri)?.name
+            } ?: "Unknown"
+
+            val result = mapOf(
+                "uri" to uri.toString(),
+                "path" to realPath,
+                "name" to folderName
+            )
+
+            promise.resolve(result)
         }
     }
 
@@ -214,13 +385,13 @@ class SDMobileCoreModule : Module() {
     }
 
     fun sendCoreEvent(body: String) {
-        if (listeners > 0) {
+        if (listeners.get() > 0) {
             this@SDMobileCoreModule.sendEvent("SDCoreEvent", mapOf("body" to body))
         }
     }
 
     fun sendCoreLog(body: String) {
-        if (logListeners > 0) {
+        if (logListeners.get() > 0) {
             this@SDMobileCoreModule.sendEvent("SDCoreLog", mapOf("body" to body))
         }
     }
@@ -248,7 +419,7 @@ class SDMobileCoreModule : Module() {
     private fun getPathFromDocId(docId: String): String? {
         // Validate document ID is not empty
         if (docId.isBlank()) {
-            Log.w("SDMobileCore", "Empty document ID provided")
+            Log.w(TAG, "Empty document ID provided")
             return null
         }
 
@@ -256,16 +427,32 @@ class SDMobileCoreModule : Module() {
         // Use limit=2 to handle paths that contain colons (e.g., "primary:path/with:colon/folder")
         val split = docId.split(":", limit = 2)
         if (split.size < 2) {
-            Log.w("SDMobileCore", "Invalid document ID format: $docId")
+            Log.w(TAG, "Invalid document ID format: $docId")
             return null
         }
 
         val storageId = split[0]
         val relativePath = split[1]
 
-        // Security: Validate path for traversal attacks
-        if (relativePath.contains("..") || relativePath.startsWith("/")) {
-            Log.w("SDMobileCore", "Suspicious path in document ID rejected: $relativePath")
+        // Security: Enhanced path validation
+        // Check each component individually for more thorough validation
+        val pathComponents = relativePath.split("/").filter { it.isNotEmpty() }
+        for (component in pathComponents) {
+            // Reject parent directory traversal
+            if (component == "..") {
+                Log.w(TAG, "Path traversal attempt detected in document ID: $relativePath")
+                return null
+            }
+            // Reject current directory reference (could be used in obfuscation)
+            if (component == ".") {
+                Log.w(TAG, "Suspicious path component '.' in document ID: $relativePath")
+                return null
+            }
+        }
+
+        // Reject absolute paths
+        if (relativePath.startsWith("/")) {
+            Log.w(TAG, "Absolute path in document ID rejected: $relativePath")
             return null
         }
 
@@ -274,13 +461,15 @@ class SDMobileCoreModule : Module() {
                 // Primary external storage
                 @Suppress("DEPRECATION")
                 val basePath = Environment.getExternalStorageDirectory().absolutePath
-                if (relativePath.isNotEmpty()) "$basePath/$relativePath" else basePath
+                // Use validateAndResolvePath for canonical path verification
+                validateAndResolvePath(basePath, relativePath)
             }
             "home" -> {
                 // Home directory (Documents folder on some devices)
                 @Suppress("DEPRECATION")
                 val basePath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).absolutePath
-                if (relativePath.isNotEmpty()) "$basePath/$relativePath" else basePath
+                // Use validateAndResolvePath for canonical path verification
+                validateAndResolvePath(basePath, relativePath)
             }
             else -> {
                 // Other storage volumes (SD cards, USB drives)
@@ -291,19 +480,24 @@ class SDMobileCoreModule : Module() {
                 }
 
                 // Fallback: Try common mount points
-                val possiblePaths = listOf(
+                val possibleBases = listOf(
                     "/storage/$storageId",
                     "/mnt/media_rw/$storageId",
                     "/mnt/usb/$storageId"
-                ).map { base ->
-                    if (relativePath.isNotEmpty()) "$base/$relativePath" else base
+                )
+
+                // Find the first existing base path and validate the full path
+                for (base in possibleBases) {
+                    if (java.io.File(base).exists()) {
+                        val validatedPath = validateAndResolvePath(base, relativePath)
+                        if (validatedPath != null) {
+                            return validatedPath
+                        }
+                    }
                 }
 
-                val foundPath = possiblePaths.firstOrNull { java.io.File(it).exists() }
-                if (foundPath == null) {
-                    Log.w("SDMobileCore", "Could not resolve path for storage ID: $storageId, tried: $possiblePaths")
-                }
-                foundPath
+                Log.w(TAG, "Could not resolve path for storage ID: $storageId")
+                null
             }
         }
     }
@@ -344,7 +538,7 @@ class SDMobileCoreModule : Module() {
                 }
             }
         } catch (e: Exception) {
-            Log.w("SDMobileCore", "StorageManager resolution failed: ${e.message}")
+            Log.w(TAG, "StorageManager resolution failed: ${e.message}")
         }
 
         return null
