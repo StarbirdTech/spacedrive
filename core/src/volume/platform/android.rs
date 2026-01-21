@@ -164,7 +164,9 @@ fn is_removable_storage(mount_point: &Path) -> bool {
 				// Extract device name (e.g., /dev/block/vold/public:179,65 -> check sysfs)
 				if device.contains("/dev/block/") {
 					// For vold-managed devices, check if they're under /mnt/media_rw (typically removable)
-					if mount_point.starts_with("/mnt/media_rw") || mount_point.starts_with("/mnt/usb") {
+					if mount_point.starts_with("/mnt/media_rw")
+						|| mount_point.starts_with("/mnt/usb")
+					{
 						return true;
 					}
 					// Try to extract the block device name for sysfs check
@@ -198,10 +200,7 @@ fn detect_external_volumes(device_id: Uuid, device_name: &str) -> Vec<Volume> {
 		let entries = match std::fs::read_dir(base) {
 			Ok(e) => e,
 			Err(e) => {
-				debug!(
-					"ANDROID_DETECT: Cannot read {}: {}",
-					base_path, e
-				);
+				debug!("ANDROID_DETECT: Cannot read {}: {}", base_path, e);
 				continue;
 			}
 		};
