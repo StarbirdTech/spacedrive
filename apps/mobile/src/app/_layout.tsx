@@ -34,24 +34,6 @@ export default function RootLayout() {
                   animation: 'slide_from_bottom'
                 }}
               />
-              <Stack.Screen
-                name="location/[locationId]"
-                options={{
-                  animation: 'slide_from_right'
-                }}
-              />
-              <Stack.Screen
-                name="device/[deviceId]"
-                options={{
-                  animation: 'slide_from_right'
-                }}
-              />
-              <Stack.Screen
-                name="volume/[volumeId]"
-                options={{
-                  animation: 'slide_from_right'
-                }}
-              />
             </Stack>
           </SpacedriveProvider>
         </AppResetContext.Provider>
