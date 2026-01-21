@@ -5,6 +5,12 @@ import { useLibraryQuery } from "../../client";
 import { Card } from "../../components/primitive";
 import { DevicesGroup, LocationsGroup, VolumesGroup } from "./components";
 
+// Animation config for smooth transitions
+const timingConfig = {
+	duration: 200,
+	easing: Easing.out(Easing.cubic),
+};
+
 interface Space {
 	id: string;
 	name: string;
