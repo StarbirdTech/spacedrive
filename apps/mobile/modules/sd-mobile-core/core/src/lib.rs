@@ -10,6 +10,41 @@ use std::{
 	sync::Arc,
 };
 
+/// Debug logging macro that only emits output in debug builds.
+/// In release builds, these calls are completely eliminated by the compiler.
+macro_rules! debug_log {
+	($($arg:tt)*) => {
+		#[cfg(debug_assertions)]
+		{
+			#[cfg(target_os = "android")]
+			log::debug!($($arg)*);
+			#[cfg(not(target_os = "android"))]
+			println!($($arg)*);
+		}
+	};
+}
+
+/// Info logging that's always available (both debug and release).
+/// Use sparingly in release - only for critical lifecycle events.
+macro_rules! info_log {
+	($($arg:tt)*) => {
+		#[cfg(target_os = "android")]
+		log::info!($($arg)*);
+		#[cfg(not(target_os = "android"))]
+		println!($($arg)*);
+	};
+}
+
+/// Error logging that's always available.
+macro_rules! error_log {
+	($($arg:tt)*) => {
+		#[cfg(target_os = "android")]
+		log::error!($($arg)*);
+		#[cfg(not(target_os = "android"))]
+		eprintln!($($arg)*);
+	};
+}
+
 /// Safely creates a CString by stripping any embedded null bytes.
 /// This prevents panics when converting strings that may contain null bytes
 /// (e.g., from file paths or error messages).
@@ -25,8 +60,13 @@ fn safe_cstring(s: impl AsRef<str>) -> CString {
 
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
+
+// Timeout configuration for async operations
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const LONG_RUNNING_TIMEOUT_SECS: u64 = 120;
 
 use sd_core::{
 	infra::daemon::rpc::RpcServer,
@@ -220,6 +260,12 @@ pub unsafe extern "C" fn initialize_core(
 		log::info!("Android logger initialized for sd-mobile-core");
 	}
 
+	// SAFETY: Validate data_dir is not null before dereferencing
+	if data_dir.is_null() {
+		error_log!("initialize_core: data_dir is null");
+		return -2; // Error code for null pointer
+	}
+
 	let data_dir_str = unsafe { CStr::from_ptr(data_dir).to_string_lossy().to_string() };
 
 	let device_name_opt = if device_name.is_null() {
@@ -249,17 +295,17 @@ pub unsafe extern "C" fn initialize_core(
 		log::error!("RUST PANIC: {} at {}", msg, location);
 
 		#[cfg(not(target_os = "android"))]
-		println!("🔥 RUST PANIC: {} at {}", msg, location);
+		eprintln!("RUST PANIC: {} at {}", msg, location);
 	}));
 
-	println!(
+	info_log!(
 		"Initializing embedded Spacedrive core with data dir: {}, device name: {:?}",
 		data_dir_str, device_name_opt
 	);
 
 	// Check if already initialized (singleton pattern)
 	if RUNTIME.get().is_some() && CORE.get().is_some() {
-		println!("Embedded core already initialized, skipping");
+		debug_log!("Embedded core already initialized, skipping");
 		return 0;
 	}
 
@@ -279,7 +325,7 @@ pub unsafe extern "C" fn initialize_core(
 	let rt = match Runtime::new() {
 		Ok(rt) => rt,
 		Err(e) => {
-			println!("Failed to create Tokio runtime: {}", e);
+			error_log!("Failed to create Tokio runtime: {}", e);
 			return -1;
 		}
 	};
@@ -287,7 +333,7 @@ pub unsafe extern "C" fn initialize_core(
 	// Ensure data directory exists
 	let data_path = PathBuf::from(data_dir_str.clone());
 	if let Err(e) = std::fs::create_dir_all(&data_path) {
-		println!("Failed to create data directory: {}", e);
+		error_log!("Failed to create data directory: {}", e);
 		return -1;
 	}
 
@@ -298,7 +344,7 @@ pub unsafe extern "C" fn initialize_core(
 	let mut core = match core {
 		Ok(core) => core,
 		Err(e) => {
-			println!("Failed to initialize core: {}", e);
+			error_log!("Failed to initialize core: {}", e);
 			return -1;
 		}
 	};
@@ -307,17 +353,17 @@ pub unsafe extern "C" fn initialize_core(
 	// iOS: Limited background networking capabilities
 	// Android: SELinux may deny access to /sys/class/net for interface enumeration
 	let networking_result = rt.block_on(async {
-		println!("Initializing networking with protocol registration...");
+		debug_log!("Initializing networking with protocol registration...");
 		core.init_networking().await
 	});
 
 	match networking_result {
 		Ok(()) => {
-			println!("Networking initialized with protocol registration");
+			info_log!("Networking initialized with protocol registration");
 		}
 		Err(e) => {
-			println!("Failed to initialize networking: {}", e);
-			println!("Continuing without networking (pairing will not work)");
+			error_log!("Failed to initialize networking: {}", e);
+			info_log!("Continuing without networking (pairing will not work)");
 			// Log more details on Android
 			#[cfg(target_os = "android")]
 			log::warn!("Android networking init failed: {}. Device sync will not be available.", e);
@@ -343,8 +389,8 @@ pub unsafe extern "C" fn initialize_core(
 /// Shutdown the embedded core
 #[no_mangle]
 pub extern "C" fn shutdown_core() {
-	println!("Shutting down embedded core...");
-	println!("Core shut down");
+	info_log!("Shutting down embedded core...");
+	info_log!("Core shut down");
 }
 
 /// Handle JSON-RPC message from the embedded core
@@ -359,13 +405,31 @@ pub unsafe extern "C" fn handle_core_msg(
 	callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char),
 	callback_data: *mut std::os::raw::c_void,
 ) {
+	// SAFETY: Validate query pointer before dereferencing
+	if query.is_null() {
+		let error_json = r#"{"jsonrpc":"2.0","id":"","error":{"code":-32600,"message":"Query pointer is null"}}"#;
+		let error_cstring = safe_cstring(error_json);
+		callback(callback_data, error_cstring.as_ptr());
+		return;
+	}
+
 	let query_str = unsafe { CStr::from_ptr(query).to_string_lossy().to_string() };
 
-	println!("[RPC REQUEST]: {}", query_str);
+	debug_log!("[RPC REQUEST]: {}", query_str);
 
 	// Get global state
 	let runtime = match RUNTIME.get() {
 		Some(rt) => rt,
+		None => {
+			let error_json = r#"{"jsonrpc":"2.0","id":"","error":{"code":-32603,"message":"Runtime not initialized"}}"#;
+			let error_cstring = safe_cstring(error_json);
+			callback(callback_data, error_cstring.as_ptr());
+			return;
+		}
+	};
+
+	let core = match CORE.get() {
+		Some(core) => core,
 		None => {
 			let error_json = r#"{"jsonrpc":"2.0","id":"","error":{"code":-32603,"message":"Core not initialized"}}"#;
 			let error_cstring = safe_cstring(error_json);
@@ -374,11 +438,15 @@ pub unsafe extern "C" fn handle_core_msg(
 		}
 	};
 
-	let core = CORE.get().unwrap();
-
 	// Convert callback pointers to usize for Send safety
 	let callback_fn_ptr: usize = callback as usize;
 	let callback_data_int: usize = callback_data as usize;
+
+	// SAFETY: Validate callback pointer is non-zero before transmute
+	if callback_fn_ptr == 0 {
+		error_log!("handle_core_msg: callback function pointer is null");
+		return;
+	}
 
 	// Spawn async task to handle the request
 	runtime.spawn(async move {
@@ -387,9 +455,10 @@ pub unsafe extern "C" fn handle_core_msg(
 			r#"{"jsonrpc":"2.0","id":"","error":{"code":-32603,"message":"Response serialization failed"}}"#.to_string()
 		);
 
-		println!("[RPC RESPONSE]: {}", response_json);
+		debug_log!("[RPC RESPONSE]: {}", response_json);
 
 		let response_cstring = safe_cstring(response_json);
+		// SAFETY: callback_fn_ptr was validated as non-zero before spawning
 		let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 			unsafe { std::mem::transmute(callback_fn_ptr) };
 		let callback_data_ptr: *mut std::os::raw::c_void =
@@ -405,20 +474,32 @@ pub extern "C" fn spawn_core_event_listener(
 	callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char),
 	callback_data: *mut std::os::raw::c_void,
 ) {
-	println!("Starting core event listener...");
+	debug_log!("Starting core event listener...");
 
 	let core = match CORE.get() {
 		Some(core) => core,
 		None => {
-			println!("Core not initialized, cannot start event listener");
+			error_log!("Core not initialized, cannot start event listener");
 			return;
 		}
 	};
 
-	let runtime = RUNTIME.get().unwrap();
+	let runtime = match RUNTIME.get() {
+		Some(rt) => rt,
+		None => {
+			error_log!("Runtime not initialized, cannot start event listener");
+			return;
+		}
+	};
 
 	let callback_fn_ptr: usize = callback as usize;
 	let callback_data_int: usize = callback_data as usize;
+
+	// SAFETY: Validate callback pointer is non-zero before transmute
+	if callback_fn_ptr == 0 {
+		error_log!("spawn_core_event_listener: callback function pointer is null");
+		return;
+	}
 
 	let mut event_subscriber = core.events.subscribe();
 
@@ -427,14 +508,15 @@ pub extern "C" fn spawn_core_event_listener(
 			let event_json = match serde_json::to_string(&event) {
 				Ok(json) => json,
 				Err(e) => {
-					println!("Failed to serialize event: {}", e);
+					error_log!("Failed to serialize event: {}", e);
 					continue;
 				}
 			};
 
-			println!("Broadcasting event: {}", event_json);
+			debug_log!("Broadcasting event: {}", event_json);
 
 			let event_cstring = safe_cstring(event_json);
+			// SAFETY: callback_fn_ptr was validated as non-zero before spawning
 			let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 				unsafe { std::mem::transmute(callback_fn_ptr) };
 			let callback_data_ptr: *mut std::os::raw::c_void =
@@ -450,54 +532,92 @@ pub extern "C" fn spawn_core_log_listener(
 	callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char),
 	callback_data: *mut std::os::raw::c_void,
 ) {
-	println!("[FFI] spawn_core_log_listener called");
+	debug_log!("[FFI] spawn_core_log_listener called");
 
 	let core = match CORE.get() {
 		Some(core) => core,
 		None => {
-			println!("❌ [FFI] Core not initialized, cannot start log listener");
+			error_log!("[FFI] Core not initialized, cannot start log listener");
 			return;
 		}
 	};
 
-	println!("[FFI] Core found, subscribing to LogBus...");
-	let runtime = RUNTIME.get().unwrap();
+	debug_log!("[FFI] Core found, subscribing to LogBus...");
+	let runtime = match RUNTIME.get() {
+		Some(rt) => rt,
+		None => {
+			error_log!("[FFI] Runtime not initialized, cannot start log listener");
+			return;
+		}
+	};
 
 	let callback_fn_ptr: usize = callback as usize;
 	let callback_data_int: usize = callback_data as usize;
 
+	// SAFETY: Validate callback pointer is non-zero before transmute
+	if callback_fn_ptr == 0 {
+		error_log!("[FFI] spawn_core_log_listener: callback function pointer is null");
+		return;
+	}
+
 	let mut log_subscriber = core.logs.subscribe();
-	println!(
+	debug_log!(
 		"[FFI] Log subscriber created, current subscriber count: {}",
 		core.logs.subscriber_count()
 	);
 
 	runtime.spawn(async move {
-		println!("[FFI] Log listener task spawned, waiting for logs...");
+		debug_log!("[FFI] Log listener task spawned, waiting for logs...");
 		while let Ok(log) = log_subscriber.recv().await {
 			let log_json = match serde_json::to_string(&log) {
 				Ok(json) => json,
 				Err(e) => {
-					println!("❌ [FFI] Failed to serialize log: {}", e);
+					error_log!("[FFI] Failed to serialize log: {}", e);
 					continue;
 				}
 			};
 
-			println!("[FFI] Broadcasting log: {}", log_json);
+			debug_log!("[FFI] Broadcasting log: {}", log_json);
 
 			let log_cstring = safe_cstring(log_json);
+			// SAFETY: callback_fn_ptr was validated as non-zero before spawning
 			let callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char) =
 				unsafe { std::mem::transmute(callback_fn_ptr) };
 			let callback_data_ptr: *mut std::os::raw::c_void =
 				callback_data_int as *mut std::os::raw::c_void;
 			callback(callback_data_ptr, log_cstring.as_ptr());
 		}
-		println!("❌ [FFI] Log listener task ended");
+		debug_log!("[FFI] Log listener task ended");
 	});
 }
 
 // Helper functions
 // (send_response function removed - inlined into handle_core_msg)
+
+/// List of methods that are known to take longer and require extended timeout
+const LONG_RUNNING_METHODS: &[&str] = &[
+	"action:locations.add",
+	"action:locations.rescan",
+	"action:libraries.create",
+	"action:jobs.run",
+	"action:sync.full_sync",
+];
+
+/// Check if a method is long-running and requires extended timeout
+fn is_long_running_method(method: &str) -> bool {
+	LONG_RUNNING_METHODS
+		.iter()
+		.any(|&prefix| method.starts_with(prefix))
+}
+
+/// Get appropriate timeout duration for a method
+fn get_timeout_for_method(method: &str) -> Duration {
+	if is_long_running_method(method) {
+		Duration::from_secs(LONG_RUNNING_TIMEOUT_SECS)
+	} else {
+		Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+	}
+}
 
 async fn handle_json_rpc_request(request_json: String, core: &Arc<Core>) -> serde_json::Value {
 	// Try parsing as batch first, then as single request
@@ -509,14 +629,32 @@ async fn handle_json_rpc_request(request_json: String, core: &Arc<Core>) -> serd
 			for req in batch {
 				responses.push(process_single_request(req, core).await);
 			}
-			serde_json::to_value(responses).unwrap()
+			serde_json::to_value(responses).unwrap_or_else(|e| {
+				serde_json::json!({
+					"jsonrpc": "2.0",
+					"id": "",
+					"error": {
+						"code": -32603,
+						"message": format!("Failed to serialize batch response: {}", e)
+					}
+				})
+			})
 		}
 		Err(_) => {
 			// Try as single request
 			match serde_json::from_str::<JsonRpcRequest>(&request_json) {
 				Ok(req) => {
 					let response = process_single_request(req, core).await;
-					serde_json::to_value(response).unwrap()
+					serde_json::to_value(response).unwrap_or_else(|e| {
+						serde_json::json!({
+							"jsonrpc": "2.0",
+							"id": "",
+							"error": {
+								"code": -32603,
+								"message": format!("Failed to serialize response: {}", e)
+							}
+						})
+					})
 				}
 				Err(e) => {
 					serde_json::json!({
@@ -598,7 +736,38 @@ async fn process_single_request(
 		}
 	};
 
-	let daemon_response = process_daemon_request(daemon_request, core).await;
+	// Determine timeout based on method type
+	let timeout_duration = get_timeout_for_method(&jsonrpc_request.method);
+
+	// Process with timeout
+	let daemon_response =
+		match tokio::time::timeout(timeout_duration, process_daemon_request(daemon_request, core))
+			.await
+		{
+			Ok(response) => response,
+			Err(_elapsed) => {
+				let timeout_secs = timeout_duration.as_secs();
+				return JsonRpcResponse {
+					jsonrpc: "2.0".to_string(),
+					id: request_id,
+					result: None,
+					error: Some(JsonRpcError {
+						code: -32000,
+						message: format!(
+							"Request timeout after {}s: {}",
+							timeout_secs, jsonrpc_request.method
+						),
+						data: Some(JsonRpcErrorData {
+							error_type: "TIMEOUT".to_string(),
+							details: Some(serde_json::json!({
+								"method": jsonrpc_request.method,
+								"timeout_secs": timeout_secs
+							})),
+						}),
+					}),
+				};
+			}
+		};
 
 	convert_daemon_response_to_jsonrpc(daemon_response, request_id)
 }
@@ -614,7 +783,12 @@ fn convert_jsonrpc_to_daemon_request(
 
 	let daemon_request = if jsonrpc.method.starts_with("query:") {
 		let payload = if jsonrpc.params.input.is_object()
-			&& jsonrpc.params.input.as_object().unwrap().is_empty()
+			&& jsonrpc
+				.params
+				.input
+				.as_object()
+				.map(|o| o.is_empty())
+				.unwrap_or(false)
 		{
 			serde_json::Value::Null
 		} else {
@@ -700,6 +874,114 @@ fn convert_daemon_response_to_jsonrpc(
 				}),
 			}),
 		},
+	}
+}
+
+// Unit tests for FFI layer
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_safe_cstring_strips_nulls() {
+		// Test that embedded null bytes are stripped
+		let input = "hello\0world\0test";
+		let result = safe_cstring(input);
+		assert_eq!(result.to_str().unwrap(), "helloworldtest");
+	}
+
+	#[test]
+	fn test_safe_cstring_empty_string() {
+		// Test empty string handling
+		let result = safe_cstring("");
+		assert_eq!(result.to_str().unwrap(), "");
+	}
+
+	#[test]
+	fn test_safe_cstring_normal_string() {
+		// Test normal string without nulls
+		let input = "normal string without nulls";
+		let result = safe_cstring(input);
+		assert_eq!(result.to_str().unwrap(), input);
+	}
+
+	#[test]
+	fn test_safe_cstring_unicode() {
+		// Test unicode handling
+		let input = "hello\u{1F600}world"; // Contains emoji
+		let result = safe_cstring(input);
+		assert_eq!(result.to_str().unwrap(), input);
+	}
+
+	#[test]
+	fn test_safe_cstring_only_nulls() {
+		// Test string with only null bytes
+		let input = "\0\0\0";
+		let result = safe_cstring(input);
+		assert_eq!(result.to_str().unwrap(), "");
+	}
+
+	#[test]
+	fn test_daemon_error_connection_failed() {
+		let error = DaemonError::ConnectionFailed("test connection".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32001);
+		assert!(message.contains("Connection failed"));
+		assert_eq!(data.error_type, "CONNECTION_FAILED");
+	}
+
+	#[test]
+	fn test_daemon_error_handler_not_found() {
+		let error = DaemonError::HandlerNotFound("unknownMethod".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32601); // Standard JSON-RPC method not found code
+		assert!(message.contains("Method not found"));
+		assert_eq!(data.error_type, "HANDLER_NOT_FOUND");
+	}
+
+	#[test]
+	fn test_daemon_error_invalid_request() {
+		let error = DaemonError::InvalidRequest("bad format".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32600); // Standard JSON-RPC invalid request code
+		assert!(message.contains("Invalid request"));
+		assert_eq!(data.error_type, "INVALID_REQUEST");
+	}
+
+	#[test]
+	fn test_daemon_error_internal_error() {
+		let error = DaemonError::InternalError("internal issue".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32603); // Standard JSON-RPC internal error code
+		assert!(message.contains("Internal error"));
+		assert_eq!(data.error_type, "INTERNAL_ERROR");
+	}
+
+	#[test]
+	fn test_daemon_error_security_error() {
+		let error = DaemonError::SecurityError("unauthorized".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32010);
+		assert!(message.contains("Security error"));
+		assert_eq!(data.error_type, "SECURITY_ERROR");
+	}
+
+	#[test]
+	fn test_daemon_error_validation_error() {
+		let error = DaemonError::ValidationError("invalid input".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32009);
+		assert!(message.contains("Validation error"));
+		assert_eq!(data.error_type, "VALIDATION_ERROR");
+	}
+
+	#[test]
+	fn test_daemon_error_core_unavailable() {
+		let error = DaemonError::CoreUnavailable("shutting down".to_string());
+		let (code, message, data) = daemon_error_to_jsonrpc(&error);
+		assert_eq!(code, -32008);
+		assert!(message.contains("Core unavailable"));
+		assert_eq!(data.error_type, "CORE_UNAVAILABLE");
 	}
 }
 
@@ -818,6 +1100,17 @@ mod android {
 		) {
 			// Wrap entire callback in catch_unwind to prevent panics from crossing FFI boundary
 			let callback_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				// SAFETY: Validate data pointer before Box::from_raw
+				if data.is_null() {
+					log::error!("android_callback: data pointer is null");
+					return;
+				}
+				// SAFETY: Validate result pointer before CStr::from_ptr
+				if result.is_null() {
+					log::error!("android_callback: result pointer is null");
+					return;
+				}
+
 				let promise_ref = unsafe { Box::from_raw(data as *mut GlobalRef) };
 				let result_str = unsafe { CStr::from_ptr(result).to_string_lossy().to_string() };
 
