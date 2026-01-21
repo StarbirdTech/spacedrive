@@ -350,6 +350,37 @@ class SDMobileCoreModule : Module() {
 				}
 			}
 
+			// Check if the app has full storage access permission (Android 11+)
+			Function("hasStoragePermission") {
+				val context = appContext.reactContext ?: return@Function false
+				hasStoragePermission(context)
+			}
+
+			// Check if full storage permission is required (Android 11+)
+			Function("requiresStoragePermission") {
+				Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+			}
+
+			// Open the system settings page to grant "All Files Access" permission
+			Function("openStoragePermissionSettings") {
+				val context = appContext.reactContext ?: return@Function false
+				try {
+					val action = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+						android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+					} else {
+						android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+					}
+					val intent = Intent(action, Uri.parse("package:${context.packageName}")).apply {
+						addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+					}
+					context.startActivity(intent)
+					true
+				} catch (e: Exception) {
+					Log.e(TAG, "Failed to open storage permission settings: ${e.message}")
+					false
+				}
+			}
+
 			OnActivityResult { _, payload ->
 				// Look up promise by request code from concurrent-safe map
 				val promise = pendingFolderPickerPromises.remove(payload.requestCode)

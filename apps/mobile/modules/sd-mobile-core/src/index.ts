@@ -38,6 +38,12 @@ export interface CoreModule {
   addLogListener(callback: (log: CoreLog) => void): () => void;
   pickFolder(): Promise<FolderPickerResult>;
   getPathFromUri(uri: string): string | null;
+  /** Check if the app has full storage access permission (Android 11+) */
+  hasStoragePermission(): boolean;
+  /** Check if full storage permission is required for this Android version */
+  requiresStoragePermission(): boolean;
+  /** Open system settings to grant "All Files Access" permission */
+  openStoragePermissionSettings(): boolean;
 }
 
 interface SDMobileCoreNativeModule extends NativeModule<SDMobileCoreEvents> {
@@ -51,6 +57,9 @@ interface SDMobileCoreNativeModule extends NativeModule<SDMobileCoreEvents> {
   addLogListener(callback: (log: CoreLog) => void): () => void;
   pickFolder(options: Record<string, unknown>): Promise<FolderPickerResult>;
   getPathFromUri(uri: string): string | null;
+  hasStoragePermission(): boolean;
+  requiresStoragePermission(): boolean;
+  openStoragePermissionSettings(): boolean;
 }
 
 const SDMobileCoreModule =
@@ -85,5 +94,14 @@ export const SDMobileCore: CoreModule = {
   },
   getPathFromUri: (uri: string) => {
     return SDMobileCoreModule.getPathFromUri(uri);
+  },
+  hasStoragePermission: () => {
+    return SDMobileCoreModule.hasStoragePermission();
+  },
+  requiresStoragePermission: () => {
+    return SDMobileCoreModule.requiresStoragePermission();
+  },
+  openStoragePermissionSettings: () => {
+    return SDMobileCoreModule.openStoragePermissionSettings();
   },
 };

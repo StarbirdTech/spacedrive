@@ -23,6 +23,7 @@ import { LibrarySwitcherPanel } from "../../components/LibrarySwitcherPanel";
 import { GlassButton } from "../../components/GlassButton";
 import { GlassSearchBar } from "../../components/GlassSearchBar";
 import { JobManagerPanel } from "../../components/JobManagerPanel";
+import { StoragePermissionBanner } from "../../components/StoragePermissionBanner";
 import { useRouter } from "expo-router";
 import { useSearchStore } from "../explorer/context/SearchContext";
 import { CircleNotch, ListBullets } from "phosphor-react-native";
@@ -653,6 +654,11 @@ export function OverviewScreen() {
 				scrollEventThrottle={16}
 				pointerEvents="box-none"
 			>
+				{/* Storage Permission Banner (Android only) */}
+				<View className="pt-4" pointerEvents="auto">
+					<StoragePermissionBanner />
+				</View>
+
 				<View className="px-4 pt-4" pointerEvents="auto">
 
 				{/* Device Panel */}
