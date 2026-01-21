@@ -241,7 +241,12 @@ fn daemon_error_to_jsonrpc(error: &DaemonError) -> (i32, String, JsonRpcErrorDat
 }
 
 /// Initialize the embedded core with full Spacedrive functionality
+///
+/// # Safety
+/// - `data_dir` must be a valid, non-null pointer to a null-terminated C string
+/// - `device_name` may be null, but if non-null must be a valid pointer to a null-terminated C string
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn initialize_core(
 	data_dir: *const std::os::raw::c_char,
 	device_name: *const std::os::raw::c_char,
@@ -335,7 +340,7 @@ pub extern "C" fn initialize_core(
 	}
 
 	// Initialize core
-	let mut core =
+	let core =
 		rt.block_on(async { Core::new_with_config(data_path, None, device_name_opt).await });
 
 	let mut core = match core {
@@ -391,7 +396,13 @@ pub extern "C" fn shutdown_core() {
 }
 
 /// Handle JSON-RPC message from the embedded core
+///
+/// # Safety
+/// - `query` must be a valid, non-null pointer to a null-terminated C string
+/// - `callback` must be a valid function pointer
+/// - `callback_data` is passed through to the callback and may be null
 #[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn handle_core_msg(
 	query: *const std::os::raw::c_char,
 	callback: extern "C" fn(*mut std::os::raw::c_void, *const std::os::raw::c_char),

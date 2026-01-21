@@ -23,7 +23,7 @@ output-reports:
 
 complexity:
   active: true
-  ComplexMethod:
+  CyclomaticComplexMethod:
     active: true
     threshold: 15
   LargeClass:
@@ -160,7 +160,7 @@ style:
   NewLineAtEndOfFile:
     active: true
   NoTabs:
-    active: true
+    active: false  # Project uses tabs for indentation
   OptionalAbstractKeyword:
     active: true
   OptionalUnit:
