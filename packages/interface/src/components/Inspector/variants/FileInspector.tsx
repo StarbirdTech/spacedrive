@@ -29,6 +29,7 @@ import {getIcon} from '@sd/assets/util';
 import type {File} from '@sd/ts-client';
 import {toast} from '@sd/ui';
 import clsx from 'clsx';
+import {LocationMap} from '../LocationMap';
 import {useState} from 'react';
 import {useJobsContext} from '../../../components/JobManager/hooks/JobsContext';
 import {TagSelectorButton} from '../../../components/Tags';
@@ -87,7 +88,7 @@ export function FileInspector({file}: FileInspectorProps) {
 	};
 
 	const fileQuery = useNormalizedQuery<{file_id: string}, File>({
-		wireMethod: 'query:files.by_id',
+		query: 'files.by_id',
 		input: {file_id: file?.id || ''},
 		resourceType: 'file',
 		resourceId: file?.id,
@@ -606,32 +607,13 @@ function MediaMetadataCard({file}: {file: File}) {
 				</div>
 			)}
 
-			{/* Location Map Placeholder */}
-			{hasLocation && imageData && (
-				<div className="bg-app-box/60 border-app-line/50 mx-2 overflow-hidden rounded-xl border">
-					<div className="bg-accent/10 flex h-32 items-center justify-center">
-						<div className="text-center">
-							<span className="text-accent mx-auto mb-1 block">
-								<MapPin size={24} weight="fill" />
-							</span>
-							<span className="text-sidebar-inkDull text-xs">
-								{imageData.latitude?.toFixed(4)},{' '}
-								{imageData.longitude?.toFixed(4)}
-							</span>
-						</div>
-					</div>
-					<div className="border-app-line/30 flex items-center justify-between border-t px-3 py-2">
-						<span className="text-accent text-xs font-medium">
-							View Location
-						</span>
-						<button
-							type="button"
-							className="text-accent text-xs font-medium opacity-60"
-						>
-							Adjust
-						</button>
-					</div>
-				</div>
+			{/* Location Map */}
+			{hasLocation && imageData && imageData.latitude && imageData.longitude && (
+				<LocationMap
+					latitude={imageData.latitude}
+					longitude={imageData.longitude}
+					className="bg-app-box/60 border-app-line/50 mx-2 overflow-hidden rounded-xl border"
+				/>
 			)}
 		</div>
 	);
@@ -1572,7 +1554,7 @@ function InstancesTab({file}: {file: File}) {
 		{entry_uuid: string},
 		{instances: File[]; total_count: number}
 	>({
-		wireMethod: 'query:files.alternate_instances',
+		query: 'files.alternate_instances',
 		input: {entry_uuid: file?.id || ''},
 		enabled: !!file?.id && !!file?.content_identity
 	});
@@ -1581,7 +1563,7 @@ function InstancesTab({file}: {file: File}) {
 
 	// Query devices to get proper names and icons
 	const devicesQuery = useNormalizedQuery<any, any[]>({
-		wireMethod: 'query:devices.list',
+		query: 'devices.list',
 		input: {
 			include_offline: true,
 			include_details: false,

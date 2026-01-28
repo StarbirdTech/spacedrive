@@ -5,7 +5,7 @@ pub mod persistence;
 pub mod registry;
 
 use chrono::{DateTime, Utc};
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -18,7 +18,7 @@ pub struct ConnectionInfo {
 	pub rx_bytes: u64,
 	pub tx_bytes: u64,
 }
-pub use persistence::{DevicePersistence, PersistedPairedDevice, TrustLevel};
+pub use persistence::{DevicePersistence, PairingType, PersistedPairedDevice, TrustLevel};
 pub use registry::DeviceRegistry;
 
 /// Information about a device on the network
@@ -55,15 +55,15 @@ impl Default for DeviceType {
 pub enum DeviceState {
 	/// Device discovered via Iroh discovery but not yet connected
 	Discovered {
-		node_id: NodeId,
-		node_addr: NodeAddr,
+		node_id: EndpointId,
+		node_addr: EndpointAddr,
 		discovered_at: DateTime<Utc>,
 	},
 	/// Device currently in pairing process
 	Pairing {
-		node_id: NodeId,
+		node_id: EndpointId,
 		session_id: Uuid,
-		node_addr: NodeAddr,
+		node_addr: EndpointAddr,
 		started_at: DateTime<Utc>,
 	},
 	/// Device successfully paired but not currently connected
@@ -136,7 +136,7 @@ impl SessionKeys {
 			send_key: send_key.to_vec(),
 			receive_key: receive_key.to_vec(),
 			created_at: Utc::now(),
-			expires_at: Some(Utc::now() + chrono::Duration::hours(24)), // 24 hour expiry
+			expires_at: None, // Disabled: paired devices don't expire (can re-enable for key rotation)
 		}
 	}
 

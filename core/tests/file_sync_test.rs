@@ -64,6 +64,7 @@ impl FileSyncTestSetup {
 				statistics_listener_enabled: false,
 			},
 			logging: sd_core::config::LoggingConfig::default(),
+			proxy_pairing: sd_core::config::app_config::ProxyPairingConfig::default(),
 		};
 		config.save()?;
 

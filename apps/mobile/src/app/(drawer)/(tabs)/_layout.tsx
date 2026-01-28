@@ -114,11 +114,6 @@ function IOSTabs() {
         <Icon sf="folder" />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="network">
-        <Label>Network</Label>
-        <Icon sf="network" />
-      </NativeTabs.Trigger>
-
       <NativeTabs.Trigger name="settings">
         <Label>Settings</Label>
         <Icon sf="gearshape" />
@@ -182,23 +177,6 @@ function AndroidTabs() {
           ),
           tabBarLabel: ({ color, focused }) => (
             <TabLabel label="Browse" focused={focused} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="network"
-        options={{
-          title: 'Network',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              name="globe-outline"
-              focusedName="globe"
-              focused={focused}
-              color={color}
-            />
-          ),
-          tabBarLabel: ({ color, focused }) => (
-            <TabLabel label="Network" focused={focused} color={color} />
           ),
         }}
       />

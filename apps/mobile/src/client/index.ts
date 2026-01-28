@@ -20,3 +20,4 @@ export function useMobileClient(): MobileClient {
 
 // Re-export shared hooks from ts-client
 export { useNormalizedQuery } from "@sd/ts-client/src/hooks/useNormalizedQuery";
+export { useSearchFiles } from "@sd/ts-client";

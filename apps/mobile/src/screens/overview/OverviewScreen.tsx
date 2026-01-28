@@ -9,6 +9,7 @@ import Animated, {
 	interpolate,
 	Extrapolation,
 	withTiming,
+	withRepeat,
 	Easing,
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
@@ -21,16 +22,23 @@ import { PairingPanel } from "../../components/PairingPanel";
 import { LibrarySwitcherPanel } from "../../components/LibrarySwitcherPanel";
 import { GlassButton } from "../../components/GlassButton";
 import { StoragePermissionBanner } from "../../components/StoragePermissionBanner";
+import { GlassSearchBar } from "../../components/GlassSearchBar";
+import { JobManagerPanel } from "../../components/JobManagerPanel";
+import { useRouter } from "expo-router";
+import { useSearchStore } from "../explorer/context/SearchContext";
+import { CircleNotch, ListBullets } from "phosphor-react-native";
+import { useJobs } from "../../hooks/useJobs";
 
 const HEADER_INITIAL_HEIGHT = 40;
-const HERO_HEIGHT = 340 + HEADER_INITIAL_HEIGHT;
-const HEADER_HEIGHT = 80;
+const HERO_HEIGHT = 430 + HEADER_INITIAL_HEIGHT;
+const HEADER_HEIGHT = 60;
 const NETWORK_HEADER_HEIGHT = 50;
 
 export function OverviewScreen() {
 	const insets = useSafeAreaInsets();
 	const navigation = useNavigation();
 	const client = useMobileClient();
+	const router = useRouter();
 	const scrollY = useSharedValue(0);
 	const expandedOffsetY = useSharedValue(0);
 	const [showPairing, setShowPairing] = useState(false);
@@ -39,6 +47,35 @@ export function OverviewScreen() {
 		null
 	);
 	const [isAddingStorage, setIsAddingStorage] = useState(false);
+	const { enterSearchMode } = useSearchStore();
+	const { activeJobCount, hasRunningJobs } = useJobs();
+
+	// Spinning animation for jobs icon
+	const spinRotation = useSharedValue(0);
+
+	useEffect(() => {
+		if (hasRunningJobs) {
+			spinRotation.value = withRepeat(
+				withTiming(360, { duration: 1000, easing: Easing.linear }),
+				-1, // infinite
+				false // don't reverse
+			);
+		} else {
+			spinRotation.value = withTiming(0, { duration: 200 });
+		}
+	}, [hasRunningJobs, spinRotation]);
+
+	const spinStyle = useAnimatedStyle(() => ({
+		transform: [{ rotate: `${spinRotation.value}deg` }],
+	}));
+
+	const handleSearchPress = () => {
+		router.push("/search");
+	};
+
+	const handleJobsPress = () => {
+		router.push("/jobs");
+	};
 
 	// Fetch library info with real-time statistics updates
 	const {
@@ -46,21 +83,21 @@ export function OverviewScreen() {
 		isLoading,
 		error,
 	} = useNormalizedQuery<null, Library>({
-		wireMethod: "query:libraries.info",
+		query: "libraries.info",
 		input: null,
 		resourceType: "library",
 	});
 
 	// Fetch locations list to get the selected location reactively
 	const { data: locationsData } = useNormalizedQuery<any, any>({
-		wireMethod: "query:locations.list",
+		query: "locations.list",
 		input: null,
 		resourceType: "location",
 	});
 
 	// Fetch devices to get current device slug
 	const { data: devicesData, error: devicesError } = useNormalizedQuery<any, Device[]>({
-		wireMethod: "query:devices.list",
+		query: "devices.list",
 		input: { include_offline: true, include_details: false },
 		resourceType: "device",
 	});
@@ -122,7 +159,7 @@ export function OverviewScreen() {
 
 		const opacity = interpolate(
 			scrollY.value,
-			[0, HERO_HEIGHT * 0.5],
+			[0, HERO_HEIGHT * 0.8],
 			[1, 0],
 			Extrapolation.CLAMP
 		);
@@ -158,6 +195,28 @@ export function OverviewScreen() {
 		);
 
 		return { opacity };
+	});
+
+	// Hero clipping container - clips hero at page container's top edge
+	const heroClipStyle = useAnimatedStyle(() => {
+		const headerTop = insets.top + HEADER_HEIGHT;
+		const pinDistance = HERO_HEIGHT - headerTop;
+
+		// Calculate page container's visual top edge position
+		// This mirrors the page container's scroll transform
+		const scrollOffset = interpolate(
+			scrollY.value,
+			[-200, 0, pinDistance],
+			[200, 0, -pinDistance],
+			Extrapolation.CLAMP
+		);
+
+		// Clip height = where the page container's top edge is
+		const clipHeight = HERO_HEIGHT + scrollOffset;
+
+		return {
+			height: Math.max(0, clipHeight),
+		};
 	});
 
 	// Page container: visual frame only - pins below header bar
@@ -370,44 +429,97 @@ export function OverviewScreen() {
 
 	return (
 		<View className="flex-1 bg-black">
-			{/* Hero Section - Absolute positioned with parallax */}
+			{/* Hero Clipping Container - clips hero at page container's top edge */}
 			<Animated.View
+				pointerEvents="box-none"
 				style={[
 					{
 						position: "absolute",
 						top: 0,
 						left: 0,
 						right: 0,
-						height: HERO_HEIGHT * 2,
-						zIndex: 1,
-						paddingTop: insets.top + HEADER_INITIAL_HEIGHT,
+						zIndex: 25,
+						overflow: "hidden",
 					},
-					heroAnimatedStyle,
+					heroClipStyle,
 				]}
 			>
-				<View className="px-8 pb-4 flex-row items-center gap-3">
-					<Animated.Text
-						style={[libraryNameScale]}
-						className="text-ink text-[30px] font-bold flex-1"
-					>
-						{libraryInfo.name}
-					</Animated.Text>
-					<GlassButton
-						icon={
-							<Text className="text-ink text-lg leading-none">⋯</Text>
-						}
-					/>
-				</View>
+				{/* Hero Content - parallax and fade inside the clip */}
+				<Animated.View
+					pointerEvents="box-none"
+					style={[
+						{
+							paddingTop: insets.top + HEADER_INITIAL_HEIGHT,
+						},
+						heroAnimatedStyle,
+					]}
+				>
+					<View className="px-4 pb-4 flex-row items-center gap-3">
+						<Animated.Text
+							style={[libraryNameScale]}
+							className="text-ink text-[30px] font-bold flex-1"
+						>
+							{libraryInfo.name}
+						</Animated.Text>
+						<GlassButton
+							onPress={handleJobsPress}
+							icon={
+								<View>
+									{hasRunningJobs ? (
+										<Animated.View style={spinStyle}>
+											<CircleNotch
+												size={22}
+												color="hsl(208, 100%, 57%)"
+												weight="bold"
+											/>
+										</Animated.View>
+									) : (
+										<ListBullets
+											size={22}
+											color="hsl(235, 10%, 55%)"
+											weight="bold"
+										/>
+									)}
+									{activeJobCount > 0 && (
+										<View
+											className="absolute -top-1 -right-1 bg-accent rounded-full min-w-[16px] h-[16px] items-center justify-center"
+										>
+											<Text className="text-white text-[10px] font-bold">
+												{activeJobCount > 9 ? "9+" : activeJobCount}
+											</Text>
+										</View>
+									)}
+								</View>
+							}
+						/>
+						<GlassButton
+							icon={
+								<Text className="text-ink text-2xl leading-none">⋯</Text>
+							}
+						/>
+					</View>
 
-				<HeroStats
-					totalStorage={stats.total_capacity}
-					usedStorage={stats.total_capacity - stats.available_capacity}
-					totalFiles={Number(stats.total_files)}
-					locationCount={stats.location_count}
-					tagCount={stats.tag_count}
-					deviceCount={stats.device_count}
-					uniqueContentCount={Number(stats.unique_content_count)}
-				/>
+					{/* Search Bar */}
+					<View className="px-4 mb-4" style={{ position: "relative", zIndex: 25 }} pointerEvents="auto">
+						<GlassSearchBar onPress={handleSearchPress} editable={false} />
+					</View>
+
+					{/* Wrapper to elevate HeroStats above ScrollView for touch events */}
+					<View style={{ position: "relative", zIndex: 25 }} pointerEvents="auto">
+						<HeroStats
+							totalStorage={stats.total_capacity}
+							usedStorage={stats.total_capacity - stats.available_capacity}
+							totalFiles={Number(stats.total_files)}
+							locationCount={stats.location_count}
+							tagCount={stats.tag_count}
+							deviceCount={stats.device_count}
+							uniqueContentCount={Number(stats.unique_content_count)}
+							databaseSize={Number(stats.database_size)}
+							sidecarCount={Number(stats.sidecar_count ?? 0)}
+							sidecarSize={Number(stats.sidecar_size ?? 0)}
+						/>
+					</View>
+				</Animated.View>
 			</Animated.View>
 
 			{/* Blur Overlay */}
@@ -478,14 +590,14 @@ export function OverviewScreen() {
 						className="flex-1 px-8 flex-row items-center gap-3"
 						style={{ paddingTop: insets.top }}
 					>
-						<GlassButton
-							icon={
-								<Text className="text-ink text-lg leading-none">⋯</Text>
-							}
-						/>
 						<Text className="text-ink text-xl font-bold flex-1">
 							{libraryInfo.name}
 						</Text>
+						<GlassButton
+							icon={
+								<Text className="text-ink text-2xl leading-none">⋯</Text>
+							}
+						/>
 					</View>
 				</View>
 			</Animated.View>
@@ -540,13 +652,14 @@ export function OverviewScreen() {
 				}}
 				onScroll={scrollHandler}
 				scrollEventThrottle={16}
+				pointerEvents="box-none"
 			>
 				{/* Storage Permission Banner (Android only) */}
 				<View className="pt-4">
 					<StoragePermissionBanner />
 				</View>
 
-				<View className="px-4 pt-4">
+				<View className="px-4 pt-4" pointerEvents="auto">
 
 				{/* Device Panel */}
 				<DevicePanel
@@ -554,6 +667,9 @@ export function OverviewScreen() {
 						setSelectedLocationId(location?.id || null)
 					}
 				/>
+
+				{/* Job Manager Panel */}
+				<JobManagerPanel />
 
 				{/* Action Buttons */}
 				<ActionButtons
