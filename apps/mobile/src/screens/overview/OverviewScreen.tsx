@@ -104,19 +104,10 @@ export function OverviewScreen() {
 
 	// Get the current device
 	const currentDevice = useMemo(() => {
-		if (!devicesData) {
-			console.log("[OverviewScreen] No devicesData yet");
-			return null;
-		}
-		console.log("[OverviewScreen] devicesData:", JSON.stringify(devicesData).slice(0, 500));
+		if (!devicesData) return null;
 		const devices = Array.isArray(devicesData) ? devicesData : (devicesData as any).devices;
-		if (!devices) {
-			console.log("[OverviewScreen] No devices array found");
-			return null;
-		}
-		const current = devices.find((d: Device) => d.is_current);
-		console.log("[OverviewScreen] Current device:", current?.name, current?.slug);
-		return current || null;
+		if (!devices) return null;
+		return devices.find((d: Device) => d.is_current) || null;
 	}, [devicesData]);
 
 	// Find the selected location from the list reactively
@@ -255,7 +246,12 @@ export function OverviewScreen() {
 	});
 
 	// Library name scale on overscroll (anchored left)
+	// Note: transformOrigin doesn't work well on Android, so we skip scaling there
+	const isIOS = Platform.OS === 'ios';
 	const libraryNameScale = useAnimatedStyle(() => {
+		if (!isIOS) {
+			return {};
+		}
 		const scale = interpolate(
 			scrollY.value,
 			[-200, 0],
@@ -390,6 +386,47 @@ export function OverviewScreen() {
 		return { opacity };
 	});
 
+	// Android constants for slide-over layout
+	const ANDROID_HERO_HEIGHT = 380;
+	const ANDROID_HEADER_HEIGHT = 70;
+
+	// Android scroll handler - tracks scroll position for parallax
+	// Must be defined before early returns to maintain consistent hook order
+	const androidScrollHandler = useAnimatedScrollHandler({
+		onScroll: (event) => {
+			scrollY.value = event.contentOffset.y;
+		},
+	});
+
+	// Android hero parallax style - moves slower than scroll for depth effect
+	const androidHeroParallax = useAnimatedStyle(() => {
+		const translateY = interpolate(
+			scrollY.value,
+			[0, ANDROID_HERO_HEIGHT],
+			[0, ANDROID_HERO_HEIGHT * 0.3],
+			Extrapolation.CLAMP
+		);
+		const opacity = interpolate(
+			scrollY.value,
+			[0, ANDROID_HERO_HEIGHT * 0.6],
+			[1, 0],
+			Extrapolation.CLAMP
+		);
+		return { transform: [{ translateY }], opacity };
+	});
+
+	// Android sticky network header - appears when scrolled past hero
+	const androidNetworkHeaderStyle = useAnimatedStyle(() => {
+		// Show when scroll position passes the hero section
+		const opacity = interpolate(
+			scrollY.value,
+			[ANDROID_HERO_HEIGHT - 100, ANDROID_HERO_HEIGHT - 50],
+			[0, 1],
+			Extrapolation.CLAMP
+		);
+		return { opacity };
+	});
+
 	if (isLoading || !libraryInfo) {
 		return (
 			<ScrollView
@@ -427,6 +464,164 @@ export function OverviewScreen() {
 
 	const stats = libraryInfo.statistics;
 
+	// Android layout - M3 collapsing header (hero scrolls with parallax + fade, content overlaps)
+	if (Platform.OS === 'android') {
+		return (
+			<View className="flex-1 bg-black">
+				{/* Fixed Header - library name stays at top */}
+				<View
+					style={{
+						position: 'absolute',
+						top: 0,
+						left: 0,
+						right: 0,
+						paddingTop: insets.top,
+						zIndex: 100,
+						backgroundColor: 'black',
+					}}
+				>
+					<View className="px-4 py-4 flex-row items-center gap-3">
+						<Text className="text-ink text-[28px] font-bold flex-1">
+							{libraryInfo.name}
+						</Text>
+						<GlassButton
+							onPress={handleJobsPress}
+							icon={
+								<View>
+									{hasRunningJobs ? (
+										<Animated.View style={spinStyle}>
+											<CircleNotch
+												size={22}
+												color="hsl(208, 100%, 57%)"
+												weight="bold"
+											/>
+										</Animated.View>
+									) : (
+										<ListBullets
+											size={22}
+											color="hsl(235, 10%, 55%)"
+											weight="bold"
+										/>
+									)}
+									{activeJobCount > 0 && (
+										<View className="absolute -top-1 -right-1 bg-accent rounded-full min-w-[16px] h-[16px] items-center justify-center">
+											<Text className="text-white text-[10px] font-bold">
+												{activeJobCount > 9 ? "9+" : activeJobCount}
+											</Text>
+										</View>
+									)}
+								</View>
+							}
+						/>
+						<GlassButton
+							icon={<Text className="text-ink text-2xl leading-none">⋯</Text>}
+						/>
+					</View>
+				</View>
+
+				{/* Fixed MY NETWORK Header - fades in when scrolled past hero */}
+				<Animated.View
+					style={[
+						{
+							position: 'absolute',
+							top: insets.top + ANDROID_HEADER_HEIGHT,
+							left: 0,
+							right: 0,
+							height: 50,
+							zIndex: 99,
+							backgroundColor: 'hsl(235, 15%, 13%)', // bg-app color
+							justifyContent: 'center',
+							borderBottomWidth: 1,
+							borderBottomColor: 'hsla(235, 15%, 23%, 0.3)',
+						},
+						androidNetworkHeaderStyle,
+					]}
+					pointerEvents="none"
+				>
+					<Text className="text-ink-faint text-xs font-semibold text-center">
+						MY NETWORK
+					</Text>
+				</Animated.View>
+
+				<Animated.ScrollView
+					onScroll={androidScrollHandler}
+					scrollEventThrottle={16}
+					showsVerticalScrollIndicator={false}
+					contentContainerStyle={{
+						paddingTop: insets.top + ANDROID_HEADER_HEIGHT,
+						paddingBottom: insets.bottom + 100,
+					}}
+				>
+					{/* Index 0: Hero Section - parallax effect (moves slower) + fades out */}
+					<Animated.View style={androidHeroParallax}>
+						{/* Search Bar */}
+						<View className="px-4 mb-4">
+							<GlassSearchBar onPress={handleSearchPress} editable={false} />
+						</View>
+
+						{/* Hero Stats - horizontal scroll works naturally here */}
+						<HeroStats
+							totalStorage={stats.total_capacity}
+							usedStorage={stats.total_capacity - stats.available_capacity}
+							totalFiles={Number(stats.total_files)}
+							locationCount={stats.location_count}
+							tagCount={stats.tag_count}
+							deviceCount={stats.device_count}
+							uniqueContentCount={Number(stats.unique_content_count)}
+							databaseSize={Number(stats.database_size)}
+							sidecarCount={Number(stats.sidecar_count ?? 0)}
+							sidecarSize={Number(stats.sidecar_size ?? 0)}
+						/>
+					</Animated.View>
+
+					{/* Content Card - overlaps hero, has inline MY NETWORK that scrolls away */}
+					<View className="bg-app rounded-t-[30px]" style={{ marginTop: -30 }}>
+						{/* Section Header - scrolls away, fixed one fades in to replace it */}
+						<View style={{ height: 50 }} className="justify-center">
+							<Text className="text-ink-faint text-xs font-semibold text-center">
+								MY NETWORK
+							</Text>
+						</View>
+						{/* Storage Permission Banner */}
+						<StoragePermissionBanner />
+
+						<View className="px-4">
+							{/* Device Panel */}
+							<DevicePanel
+								onLocationSelect={(location) =>
+									setSelectedLocationId(location?.id || null)
+								}
+							/>
+
+							{/* Job Manager Panel */}
+							<JobManagerPanel />
+
+							{/* Action Buttons */}
+							<ActionButtons
+								onPairDevice={() => setShowPairing(true)}
+								onSetupSync={() => {/* TODO: Open sync setup */}}
+								onAddStorage={handleAddStorage}
+							/>
+						</View>
+					</View>
+				</Animated.ScrollView>
+
+				{/* Pairing Panel */}
+				<PairingPanel
+					isOpen={showPairing}
+					onClose={() => setShowPairing(false)}
+				/>
+
+				{/* Library Switcher Panel */}
+				<LibrarySwitcherPanel
+					isOpen={showLibrarySwitcher}
+					onClose={() => setShowLibrarySwitcher(false)}
+				/>
+			</View>
+		);
+	}
+
+	// iOS layout with parallax animations
 	return (
 		<View className="flex-1 bg-black">
 			{/* Hero Clipping Container - clips hero at page container's top edge */}
@@ -652,7 +847,6 @@ export function OverviewScreen() {
 				}}
 				onScroll={scrollHandler}
 				scrollEventThrottle={16}
-				pointerEvents="box-none"
 			>
 				{/* Storage Permission Banner (Android only) */}
 				<View className="pt-4" pointerEvents="auto">
