@@ -6,10 +6,14 @@ autobins = true
 
 [features]
 default = ["wasm"]
-# FFmpeg support for video thumbnails and audio transcription
+# FFmpeg support for video thumbnails and audio extraction
 ffmpeg = ["dep:sd-ffmpeg"]
-# AI models support
-ai = []
+# Whisper speech recognition engine (internal dependency)
+whisper = ["dep:whisper-rs", "dep:hound", "dep:rubato"]
+# Speech-to-text transcription (requires audio extraction + recognition)
+speech-to-text = ["ffmpeg", "whisper"]
+# AI features umbrella (heavy deps, can be disabled for lite builds or mobile)
+ai = ["speech-to-text"]
 # HEIF image support (extends sd-images with HEIF format)
 heif = ["sd-images/heif"]
 # Mobile platform support (excludes wasm which doesn't work on iOS)
@@ -18,8 +22,6 @@ mobile = []
 cli = []
 # WASM plugin system (disabled on mobile)
 wasm = ["dep:wasmer", "dep:wasmer-middlewares"]
-# Whisper speech-to-text support (disabled on Android due to BLAS cross-compilation issues)
-whisper = ["dep:whisper-rs", "dep:hound", "dep:rubato"]
 
 
 [dependencies]
@@ -126,10 +128,10 @@ sd-media-metadata = { path = "../crates/media-metadata" }
 tokio-rustls     = "0.26"
 webp             = "0.3"
 
-# Speech-to-text dependencies (optional - disabled on Android due to cross-compilation issues)
+# Speech-to-text dependencies (optional, behind whisper feature)
 whisper-rs = { version = "0.15.1", optional = true }
-hound      = { version = "3.5", optional = true }  # WAV file reading
-rubato     = { version = "0.16", optional = true } # Audio resampling to 16kHz
+hound      = { version = "3.5", optional = true }   # WAV file reading
+rubato     = { version = "0.16", optional = true }  # Audio resampling to 16kHz
 
 # Networking
 # Iroh P2P networking

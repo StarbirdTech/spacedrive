@@ -168,7 +168,7 @@ impl LibraryAction for LocationTriggerJobAction {
 				})?
 			}
 
-			#[cfg(all(feature = "ffmpeg", feature = "whisper"))]
+			#[cfg(feature = "speech-to-text")]
 			JobType::SpeechToText => {
 				if !job_policies.speech_to_text.enabled && !self.input.force {
 					return Err(ActionError::Validation {
@@ -198,13 +198,11 @@ impl LibraryAction for LocationTriggerJobAction {
 				});
 			}
 
-			#[cfg(not(all(feature = "ffmpeg", feature = "whisper")))]
+			#[cfg(not(feature = "speech-to-text"))]
 			JobType::SpeechToText => {
 				return Err(ActionError::Validation {
 					field: "job_type".to_string(),
-					message:
-						"Speech-to-text requires FFmpeg and Whisper support which is not enabled"
-							.to_string(),
+					message: "Speech-to-text requires FFmpeg and Whisper support which is not enabled".to_string(),
 				});
 			}
 

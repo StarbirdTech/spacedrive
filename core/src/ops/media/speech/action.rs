@@ -54,7 +54,7 @@ impl LibraryAction for TranscribeAudioAction {
 		library: Arc<crate::library::Library>,
 		_context: Arc<CoreContext>,
 	) -> Result<Self::Output, ActionError> {
-		#[cfg(all(feature = "ffmpeg", feature = "whisper"))]
+		#[cfg(feature = "speech-to-text")]
 		{
 			tracing::info!(
 				"Dispatching speech-to-text job for entry: {}",
@@ -89,7 +89,7 @@ impl LibraryAction for TranscribeAudioAction {
 			})
 		}
 
-		#[cfg(not(all(feature = "ffmpeg", feature = "whisper")))]
+		#[cfg(not(feature = "speech-to-text"))]
 		{
 			Err(ActionError::InvalidInput(
 				"Speech-to-text feature is not enabled. Please rebuild with --features ffmpeg,whisper".to_string()
