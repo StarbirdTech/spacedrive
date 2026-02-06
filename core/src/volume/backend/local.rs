@@ -225,8 +225,7 @@ impl VolumeBackend for LocalBackend {
 		// Log a summary if entries were skipped (without exposing directory path)
 		if skipped_count > 0 {
 			tracing::warn!(
-				"Skipped {} entries due to permission errors. \
-				On Android, grant 'All Files Access' permission in Settings > Apps > Spacedrive > Permissions.",
+				"Skipped {} entries while reading directory entries (often permission-related on Android).",
 				skipped_count
 			);
 		}

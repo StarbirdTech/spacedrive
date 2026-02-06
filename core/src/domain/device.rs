@@ -585,11 +585,7 @@ fn detect_system_info() -> SystemInfo {
 			cpu_frequency_mhz: None,
 			memory_total_bytes: None,
 			swap_total_bytes: None,
-			form_factor: Some(if cfg!(target_os = "android") {
-				DeviceFormFactor::Mobile
-			} else {
-				DeviceFormFactor::Tablet
-			}),
+			form_factor: None,
 			manufacturer: None,
 			gpu_models: None,
 			boot_disk_type: None,

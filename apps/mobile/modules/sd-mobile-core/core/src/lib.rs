@@ -256,7 +256,11 @@ pub extern "C" fn initialize_core(
 	{
 		android_logger::init_once(
 			android_logger::Config::default()
-				.with_max_level(log::LevelFilter::Debug)
+				.with_max_level(if cfg!(debug_assertions) {
+					log::LevelFilter::Debug
+				} else {
+					log::LevelFilter::Info
+				})
 				.with_tag("sd-mobile-core"),
 		);
 		log::info!("Android logger initialized for sd-mobile-core");

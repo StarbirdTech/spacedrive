@@ -115,20 +115,17 @@ impl LibraryAction for LocationAddAction {
 			.map_err(ActionError::SeaOrm)?
 			.ok_or_else(|| ActionError::DeviceNotFound(device_uuid))?;
 
-		// Verify device still exists before proceeding (defensive check)
-		// This reduces the race window, though doesn't eliminate it entirely
-		let device_exists = entities::device::Entity::find_by_id(device_record.id)
-			.one(db)
-			.await
-			.map_err(ActionError::SeaOrm)?
-			.is_some();
-
-		if !device_exists {
-			return Err(ActionError::Internal(format!(
-				"Device {} was deleted during location creation",
-				device_uuid
-			)));
-		}
+		// Canonicalize the path to match what was validated
+		let normalized_path = match &self.input.path {
+			crate::domain::addressing::SdPath::Physical { device_slug, path } => {
+				let canonical = safe_canonicalize(path)?;
+				crate::domain::addressing::SdPath::Physical {
+					device_slug: device_slug.clone(),
+					path: canonical,
+				}
+			}
+			other => other.clone(),
+		};
 
 		// Add the location using LocationManager
 		let location_manager = LocationManager::new(context.events.as_ref().clone());
@@ -153,7 +150,7 @@ impl LibraryAction for LocationAddAction {
 		let (location_id, job_id_string) = location_manager
 			.add_location(
 				library.clone(),
-				self.input.path.clone(),
+				normalized_path.clone(),
 				self.input.name.clone(),
 				device_record.id,
 				location_mode,
@@ -174,7 +171,7 @@ impl LibraryAction for LocationAddAction {
 			None
 		};
 
-		let mut output = LocationAddOutput::new(location_id, self.input.path, self.input.name);
+		let mut output = LocationAddOutput::new(location_id, normalized_path, self.input.name);
 
 		if let Some(job_id) = job_id {
 			output = output.with_job_id(job_id);
