@@ -29,7 +29,7 @@ export function LocationsGroup() {
 		any,
 		{ locations: Location[] }
 	>({
-		wireMethod: "query:locations.list",
+		query: "locations.list",
 		input: null,
 		resourceType: "location",
 	});

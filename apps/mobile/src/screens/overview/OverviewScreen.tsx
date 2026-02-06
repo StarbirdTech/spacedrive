@@ -97,7 +97,7 @@ export function OverviewScreen() {
 
 	// Fetch devices to get current device slug
 	const { data: devicesData, error: devicesError } = useNormalizedQuery<any, Device[]>({
-		wireMethod: "query:devices.list",
+		query: "devices.list",
 		input: { include_offline: true, include_details: false },
 		resourceType: "device",
 	});

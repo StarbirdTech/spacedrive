@@ -181,23 +181,6 @@ function AndroidTabs() {
         }}
       />
       <Tabs.Screen
-        name="network"
-        options={{
-          title: 'Network',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              name="globe-outline"
-              focusedName="globe"
-              focused={focused}
-              color={color}
-            />
-          ),
-          tabBarLabel: ({ color, focused }) => (
-            <TabLabel label="Network" focused={focused} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',

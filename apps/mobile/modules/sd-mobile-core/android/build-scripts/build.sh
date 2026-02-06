@@ -33,8 +33,8 @@ export ANDROID_NDK="$ANDROID_NDK_ROOT"
 OUTPUT_DIR="../android/src/main/jniLibs"
 mkdir -p "$OUTPUT_DIR"
 
-# Use release-mobile profile for faster builds (no LTO, parallel codegen)
-# See Cargo.toml [profile.release-mobile] for settings
+# Use mobile-dev profile for faster builds (no LTO, parallel codegen)
+# See Cargo.toml [profile.mobile-dev] for settings
 
 # Build for arm64-v8a (most modern Android devices)
 echo "Building for arm64-v8a..."
@@ -51,14 +51,14 @@ unset CFLAGS_aarch64_linux_android 2>/dev/null || true
 export ANDROID_ABI=arm64-v8a
 export ANDROID_PLATFORM=android-24
 
-cargo ndk --platform 24 -t arm64-v8a -o "$OUTPUT_DIR" build --profile release-mobile
+cargo ndk --platform 24 -t arm64-v8a -o "$OUTPUT_DIR" build --profile mobile-dev
 
 # Optional: Build for armeabi-v7a (older 32-bit devices)
 # echo "Building for armeabi-v7a..."
-# cargo ndk --platform 24 -t armeabi-v7a -o "$OUTPUT_DIR" build --profile release-mobile
+# cargo ndk --platform 24 -t armeabi-v7a -o "$OUTPUT_DIR" build --profile mobile-dev
 
 # Optional: Build for x86_64 (emulators)
 # echo "Building for x86_64..."
-# cargo ndk --platform 24 -t x86_64 -o "$OUTPUT_DIR" build --profile release-mobile
+# cargo ndk --platform 24 -t x86_64 -o "$OUTPUT_DIR" build --profile mobile-dev
 
 echo "Android Rust build complete!"
