@@ -308,7 +308,8 @@ async fn test_event_filtering() -> Result<(), Box<dyn std::error::Error + Send +
 }
 
 #[tokio::test]
-async fn test_concurrent_event_subscribers() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn test_concurrent_event_subscribers() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
 	let temp_dir = TempDir::new()?;
 	let core = Core::new(temp_dir.path().to_path_buf()).await?;
 
